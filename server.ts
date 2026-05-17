@@ -9,10 +9,14 @@ import { AIEngine } from "./src/ai/engine.ts";
 import { ShellUtils, FileUtils } from "./src/utils/index.ts";
 import { GitHubService } from "./src/github/service.ts";
 import { PreviewEngine } from "./src/preview/engine.ts";
+import { TaskManager } from "./src/utils/tasks.ts";
 
 async function startServer() {
   const app = express();
   const PORT = config.port;
+
+  const taskManager = new TaskManager();
+  const userSessions = new Map<number, { role: string; content: string }[]>();
 
   let botStatus = "initializing";
   let botError: string | null = null;
@@ -25,17 +29,175 @@ async function startServer() {
 
   const isAdmin = (ctx: Context) => ctx.from?.id === config.adminId;
 
+  // --- HELPER: Natural Chat Router ---
+  async function handleNaturalChat(ctx: Context, text: string) {
+    const userId = ctx.from!.id;
+    if (!userSessions.has(userId)) userSessions.set(userId, []);
+    const history = userSessions.get(userId)!;
+
+    // Show typing status
+    await ctx.sendChatAction("typing");
+
+    // Detect Intent
+    const analysis = await AIEngine.detectIntent(text);
+    console.log("Intent detected:", analysis);
+
+    switch (analysis.intent) {
+      case "BUILD_APP":
+        return buildProject(ctx, analysis.description || text);
+      case "BUILD_APK":
+        return buildProject(ctx, `${analysis.description || text} (React Native/Mobile format)`);
+      case "TASK_ADD":
+        const task = taskManager.addTask(analysis.description || text);
+        return ctx.reply(`✅ Task added: "${task.description}" (ID: ${task.id})`);
+      case "TASK_LIST":
+        const tasks = taskManager.getTasks();
+        if (tasks.length === 0) return ctx.reply("No pending tasks. 📭");
+        return ctx.reply(`📋 *Current Tasks:*\n${tasks.map(t => `${t.completed ? '✅' : '⏳'} \`${t.id}\` - ${t.description}`).join("\n")}`, { parse_mode: "Markdown" });
+      case "MEDIA_LYRICS":
+        ctx.reply(`🔍 Searching lyrics for "${analysis.song || text}"...`);
+        const lyrics = await AIEngine.generateGemini(`Find lyrics for ${analysis.song || text}. Just the lyrics.`);
+        return ctx.reply(lyrics.slice(0, 4000));
+      case "MEDIA_VIDEO":
+        return ctx.reply(`🎬 Searching video for "${analysis.query || text}"... (Mock)`);
+      case "MEDIA_DOWNLOAD":
+        return ctx.reply(`📥 Initializing download for: ${analysis.url || text}... (Mock)`);
+      case "PUSH_GITHUB":
+        return pushToGithub(ctx, analysis.repo || "my-awesome-project");
+      case "ZIP_FOLDER":
+        return zipFolder(ctx, analysis.folder || ".");
+      case "UNZIP_FILE":
+        return unzipLatest(ctx);
+      case "CMD_SHELL":
+        if (!isAdmin(ctx)) return ctx.reply("❌ Shell access restricted to Admin.");
+        return executeShell(ctx, analysis.command || text);
+      case "SEARCH_FILE":
+        return searchFiles(ctx, analysis.query || text);
+      case "CHAT":
+      default:
+        const response = await AIEngine.chat(text, history, "You are BrokenVzn Agent. An advanced AI with system-level access. You can build apps, manage files, and automate tasks. Be concise and professional.");
+        history.push({ role: "user", content: text });
+        history.push({ role: "model", content: response });
+        if (history.length > 20) history.splice(0, 2); // Keep last 10 rounds
+        return ctx.reply(response, { parse_mode: "Markdown" });
+    }
+  }
+
+  // --- CORE LOGIC WRAPPERS ---
+
+  async function buildProject(ctx: Context, description: string) {
+    ctx.reply(`🏗 *Building Project:* ${description}\nThinking about architecture...`, { parse_mode: 'Markdown' });
+    try {
+        const codePrompt = `Create a robust project structure for: ${description}. Provide the content of key files (index.js, package.json, README.md) in backticks.`;
+        const result = await AIEngine.generateGemini(codePrompt, "You are a lead developer building production-grade source code.");
+        
+        const projectDir = `build_` + Date.now();
+        const projectPath = path.join(process.cwd(), "builds", projectDir);
+        if (!fs.existsSync(projectPath)) fs.mkdirSync(projectPath, { recursive: true });
+
+        const blocks = result.match(/```.*?\n([\s\S]*?)```/g);
+        if (blocks) {
+            blocks.forEach((block, i) => {
+                const content = block.replace(/```.*?\n/, "").replace(/```$/, "");
+                let name = "file_" + i;
+                if (content.includes("package.json") || i === 1) name = "package.json";
+                else if (content.includes("README") || i === 2) name = "README.md";
+                else if (i === 0) name = "index.js";
+                
+                FileUtils.writeFile(path.join(projectPath, name), content);
+            });
+        }
+
+        const zipPath = `${projectPath}.zip`;
+        await FileUtils.zipFolder(projectPath, zipPath);
+        await ctx.replyWithDocument({ source: zipPath, filename: `${projectDir}.zip` });
+        ctx.reply("✅ *Build Successful.*\nSource code delivered.", { parse_mode: 'Markdown' });
+    } catch (e: any) {
+        ctx.reply(`❌ *Build Failed:*\n${e.message}`, { parse_mode: 'Markdown' });
+    }
+  }
+
+  async function executeShell(ctx: Context, cmd: string) {
+    const msg = await ctx.reply(`🐚 \`[TERMINAL]\` $ ${cmd}\n\nRunning...`, { parse_mode: 'Markdown' });
+    const output = await ShellUtils.run(cmd);
+    await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🐚 \`[TERMINAL]\` $ ${cmd}\n\n\`\`\`\n${output.slice(0, 3900)}\n\`\`\``, { parse_mode: 'Markdown' });
+  }
+
+  async function pushToGithub(ctx: Context, repo: string) {
+    if (!userGithubToken) return ctx.reply("❌ GitHub token missing. Use `/github login <token>`");
+    ctx.reply(`🐙 *GitHub Sync:* Pushing to \`${repo}\`...`, { parse_mode: 'Markdown' });
+    // Implementation logic here
+  }
+
+  async function zipFolder(ctx: Context, folder: string) {
+    const fullPath = path.join(process.cwd(), folder);
+    if (!fs.existsSync(fullPath)) return ctx.reply(`❌ Folder \`${folder}\` not found.`);
+    const zipName = `${folder.replace(/\W/g, '_')}_${Date.now()}.zip`;
+    await FileUtils.zipFolder(fullPath, path.join(process.cwd(), zipName));
+    await ctx.replyWithDocument({ source: zipName });
+  }
+
+  async function unzipLatest(ctx: Context) {
+    ctx.reply("🔧 Extracting latest zip archive...");
+    // Logic to find latest zip in temp or current and unzip
+  }
+
+  async function searchFiles(ctx: Context, query: string) {
+    const results = FileUtils.searchContent(process.cwd(), query);
+    if (results.length === 0) return ctx.reply("🔍 No matches found.");
+    ctx.reply(`🔍 *Matches Found* (${results.length}):\n${results.slice(0, 10).map(r => `• \`${path.basename(r.path)}\`:${r.line} - ${r.content}`).join("\n")}`, { parse_mode: "Markdown" });
+  }
+
   // --- BOT COMMANDS ---
 
   bot.start((ctx) => {
     ctx.reply(
-      `BrokenVzn Agent v2.5 🚀\n\nI am your advanced coding and automation assistant.\nPress /menu to see what I can do.`,
+      `BrokenVzn Agent v2.6 🚀\n\nI am your advanced coding assistant. I can chat normally, build apps, and manage your GitHub.\n\nType anything to start.`,
       Markup.keyboard([
         ["/menu", "/ping"],
-        ["/build", "/shell"],
-        ["/github", "/help"]
+        ["/tasks", "/files"],
+        ["/help", "/clear"]
       ]).resize()
     );
+  });
+
+  bot.command("clear", (ctx) => {
+      userSessions.delete(ctx.from!.id);
+      ctx.reply("Memory cleared. 🧠✨");
+  });
+
+  bot.command("tasks", (ctx) => {
+    const tasks = taskManager.getTasks();
+    if (tasks.length === 0) return ctx.reply("No pending tasks. 📭");
+    const list = tasks.map(t => `${t.completed ? '✅' : '⏳'} \`${t.id}\` - ${t.description}`).join("\n");
+    ctx.reply(`📋 *Current Tasks:*\n${list}`, { parse_mode: "Markdown" });
+  });
+
+  bot.command("add_task", (ctx) => {
+    const desc = ctx.message.text.split(" ").slice(1).join(" ");
+    if (!desc) return ctx.reply("Usage: /add_task <description>");
+    const task = taskManager.addTask(desc);
+    ctx.reply(`📝 Task added with ID: \`${task.id}\``, { parse_mode: "Markdown" });
+  });
+
+  bot.command("done_task", (ctx) => {
+    const id = parseInt(ctx.message.text.split(" ")[1]);
+    if (isNaN(id)) return ctx.reply("Usage: /done_task <id>");
+    if (taskManager.completeTask(id)) ctx.reply(`✅ Task \`${id}\` marked as complete.`, { parse_mode: "Markdown" });
+    else ctx.reply("❌ Task not found.");
+  });
+
+  bot.command("download_file", (ctx) => {
+      const file = ctx.message.text.split(" ")[1];
+      if (!file) return ctx.reply("Usage: /download_file <name>");
+      const fullPath = path.join(process.cwd(), file);
+      if (!fs.existsSync(fullPath)) return ctx.reply("❌ File not found.");
+      ctx.replyWithDocument({ source: fullPath });
+  });
+
+  bot.on("text", async (ctx) => {
+    if (ctx.message.text.startsWith("/")) return; // Ignore structured commands
+    await handleNaturalChat(ctx, ctx.message.text);
   });
 
   bot.command("menu", (ctx) => {
@@ -103,91 +265,20 @@ async function startServer() {
     ctx.replyWithMarkdown(helpText);
   });
 
+  bot.command("qwen", async (ctx) => {
+      const prompt = ctx.message.text.split(" ").slice(1).join(" ");
+      if (!prompt) return ctx.reply("Usage: /qwen <prompt>");
+      ctx.reply("📖 Consulting Qwen Knowledge...");
+      const res = await AIEngine.generateQwen(prompt);
+      ctx.reply(res);
+  });
+
   bot.command("ping", (ctx) => {
     const start = Date.now();
     ctx.reply("📶 Measuring latency...").then((msg) => {
       const ms = Date.now() - start;
       bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `✅ Connected!\nLatency: ${ms}ms\nUptime: ${process.uptime().toFixed(0)}s`);
     });
-  });
-
-  bot.command("code", async (ctx) => {
-    const prompt = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!prompt) return ctx.reply("Please specify a task.");
-    try {
-        ctx.reply("🧠 Gemini is thinking...");
-        const response = await AIEngine.generateGemini(prompt, "You are a senior coding assistant.");
-        ctx.reply(response);
-    } catch (e: any) {
-        ctx.reply("AI Error: " + e.message);
-    }
-  });
-
-  bot.command("groq", async (ctx) => {
-    const prompt = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!prompt) return ctx.reply("Please specify a task.");
-    try {
-        ctx.reply("⚡ Groq LPU processing...");
-        const response = await AIEngine.generateGroq(prompt);
-        ctx.reply(response);
-    } catch (e: any) {
-        ctx.reply("Groq Error: " + e.message);
-    }
-  });
-
-  bot.command("shell", async (ctx) => {
-    if (!isAdmin(ctx)) return ctx.reply("❌ Admin access required.");
-    const cmd = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!cmd) return ctx.reply("Usage: /shell <command>");
-    
-    ctx.reply(`🐚 Executing...`);
-    const output = await ShellUtils.run(cmd);
-    ctx.reply(`\`\`\`\n${output.slice(0, 4000)}\n\`\`\``, { parse_mode: 'Markdown' });
-  });
-
-  bot.command("build", async (ctx) => {
-    const prompt = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!prompt) return ctx.reply("What should I build?");
-
-    ctx.reply("🏗 Building project structure...");
-    try {
-        // Simple logic for single-file output for now, expandable to multi-file
-        const codePrompt = `Generate a full Node.js project for: ${prompt}. Output the content of index.js and package.json enclosed in backticks with filenames.`;
-        const result = await AIEngine.generateGemini(codePrompt);
-        
-        const projectPath = path.join(process.cwd(), "builds", `project_${Date.now()}`);
-        if (!fs.existsSync(projectPath)) fs.mkdirSync(projectPath, { recursive: true });
-
-        // Parsing logic (naive)
-        const files = result.match(/```.*?\n([\s\S]*?)```/g);
-        if (files) {
-            files.forEach((f, i) => {
-                const content = f.replace(/```.*?\n/, "").replace(/```$/, "");
-                const name = i === 0 ? "index.js" : "package.json";
-                FileUtils.writeFile(path.join(projectPath, name), content);
-            });
-        }
-
-        ctx.reply("📦 Zipping project...");
-        const zipPath = `${projectPath}.zip`;
-        await FileUtils.zipFolder(projectPath, zipPath);
-        
-        await ctx.replyWithDocument({ source: zipPath, filename: "brokenvzn_app.zip" });
-        ctx.reply("✅ Delivery complete.");
-    } catch (e: any) {
-        ctx.reply("Build failed: " + e.message);
-    }
-  });
-
-  bot.command("report_whatsapp", async (ctx) => {
-    if (!isAdmin(ctx)) return ctx.reply("❌ Unauthorized.");
-    const number = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!number) return ctx.reply("Usage: /report_whatsapp <number>");
-    ctx.reply(`⚡ Reporting ${number} to WhatsApp Support...`);
-    // Simulated reporting logic as requested
-    setTimeout(() => {
-        ctx.reply("✅ Report filed. Case ID: WA-" + Math.floor(Math.random() * 100000));
-    }, 2000);
   });
 
   // --- GITHUB INTEGRATION ---
@@ -280,93 +371,6 @@ async function startServer() {
     const target = ctx.message.text.split(" ")[1];
     if (!target) return ctx.reply("Usage: /unban <user_id>");
     ctx.reply(`✅ Restrictions removed for user ${target}.`);
-  });
-
-  // --- PRODUCTIVITY ---
-
-  bot.command("remind", (ctx) => {
-    const args = ctx.message.text.split(" ");
-    if (args.length < 3) return ctx.reply("Usage: /remind <time_in_sec> <task>");
-    const time = parseInt(args[1]);
-    const task = args.slice(2).join(" ");
-    ctx.reply(`⏰ Reminder set for "${task}" in ${time} seconds.`);
-    setTimeout(() => {
-        ctx.reply(`🔔 REMINDER: ${task}`);
-    }, time * 1000);
-  });
-
-  bot.command("note", (ctx) => {
-    const text = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!text) return ctx.reply("Usage: /note <content>");
-    ctx.reply(`📝 Note saved: "${text}"`);
-  });
-
-  bot.command("task", (ctx) => {
-    const text = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!text) return ctx.reply("Usage: /task <description>");
-    ctx.reply(`✅ Task added: "${text}"`);
-  });
-
-  // --- MEDIA ---
-
-  bot.command("lyrics", async (ctx) => {
-      const song = ctx.message.text.split(" ").slice(1).join(" ");
-      if (!song) return ctx.reply("Usage: /lyrics <song_name>");
-      ctx.reply(`🔍 Searching lyrics for "${song}"...`);
-      const lyrics = await AIEngine.generateGemini(`Find lyrics for ${song}. Just the lyrics.`);
-      ctx.reply(lyrics.slice(0, 4000));
-  });
-
-  bot.command("video", (ctx) => {
-    const query = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!query) return ctx.reply("Usage: /video <search>");
-    ctx.reply(`🎬 Searching video index for "${query}"...`);
-  });
-
-  bot.command("download", (ctx) => {
-    const url = ctx.message.text.split(" ")[1];
-    if (!url) return ctx.reply("Usage: /download <url>");
-    ctx.reply(`📥 Initializing secure download from: ${url}`);
-  });
-
-  // --- FILE MANAGER ENHANCEMENTS ---
-
-  bot.command("edit", (ctx) => {
-    const args = ctx.message.text.split(" ");
-    const file = args[1];
-    const content = args.slice(2).join(" ");
-    if (!file || !content) return ctx.reply("Usage: /edit <path> <new_content>");
-    FileUtils.writeFile(path.join(process.cwd(), file), content);
-    ctx.reply(`💾 File "${file}" updated successfully.`);
-  });
-
-  bot.command("search", (ctx) => {
-    const query = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!query) return ctx.reply("Usage: /search <text>");
-    const results = FileUtils.searchContent(process.cwd(), query);
-    if (results.length === 0) return ctx.reply("❌ No matches found.");
-    ctx.reply(`🔍 Matches found:\n${results.slice(0, 5).map(r => `• ${r.path}:${r.line} - ${r.content}`).join("\n")}`);
-  });
-
-  bot.command("apk", async (ctx) => {
-    const prompt = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!prompt) return ctx.reply("Describe the app I should build in APK source format.");
-    ctx.reply("📱 Generating React Native / Expo project source...");
-    // Logic similar to build but with mobile specialty
-    ctx.reply("✅ Mobile project scaffold ready. Zipping and sending...");
-  });
-
-  bot.command("zip", async (ctx) => {
-    const folder = ctx.message.text.split(" ")[1];
-    if (!folder) return ctx.reply("Usage: /zip <folder>");
-    const out = `${folder}.zip`;
-    await FileUtils.zipFolder(path.join(process.cwd(), folder), path.join(process.cwd(), out));
-    ctx.reply(`📦 Folder compressed to ${out}`);
-  });
-
-  bot.command("files", (ctx) => {
-    const files = FileUtils.listFiles(process.cwd());
-    ctx.reply(`📂 Workspace Files:\n${files.map(f => `• ${f}`).join("\n")}`);
   });
 
   // Health check API

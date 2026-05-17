@@ -24,7 +24,7 @@ export class FileUtils {
       const output = fs.createWriteStream(outPath);
       const archive = archiver("zip", { zlib: { level: 9 } });
 
-      output.on("close", resolve);
+      output.on("close", () => resolve(true));
       archive.on("error", reject);
 
       archive.pipe(output);
