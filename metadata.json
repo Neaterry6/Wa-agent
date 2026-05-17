@@ -1,0 +1,6 @@
+{
+  "name": "BrokenVzn Agent",
+  "description": "Advanced AI coding bot, app builder, and automation assistant for Telegram.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
