@@ -48,4 +48,42 @@ export class FileUtils {
     if (!fs.existsSync(filePath)) return null;
     return fs.readFileSync(filePath, "utf-8");
   }
+
+  static listFiles(dirPath: string): string[] {
+    if (!fs.existsSync(dirPath)) return [];
+    return fs.readdirSync(dirPath);
+  }
+
+  static searchContent(dirPath: string, query: string): { path: string; line: number; content: string }[] {
+    const results: { path: string; line: number; content: string }[] = [];
+    const files = this.getAllFiles(dirPath);
+    
+    for (const file of files) {
+      const content = this.readFile(file);
+      if (content && content.includes(query)) {
+        const lines = content.split("\n");
+        lines.forEach((lineText, index) => {
+          if (lineText.includes(query)) {
+            results.push({ path: file, line: index + 1, content: lineText.trim() });
+          }
+        });
+      }
+    }
+    return results;
+  }
+
+  private static getAllFiles(dirPath: string, fileList: string[] = []): string[] {
+    const files = fs.readdirSync(dirPath);
+    files.forEach((file) => {
+      const name = path.join(dirPath, file);
+      if (fs.statSync(name).isDirectory()) {
+        if (!name.includes("node_modules") && !name.includes(".git")) {
+          this.getAllFiles(name, fileList);
+        }
+      } else {
+        fileList.push(name);
+      }
+    });
+    return fileList;
+  }
 }
