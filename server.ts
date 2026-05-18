@@ -582,8 +582,15 @@ ${data.description || 'No description'}`);
         })
         .catch(err => {
           botStatus = "failed";
-          botError = err instanceof Error ? err.message : String(err);
+          const message = err instanceof Error ? err.message : String(err);
+          const looksLikeInvalidToken = message.includes("404") || message.includes("Not Found");
+          botError = looksLikeInvalidToken
+            ? `${message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
+            : message;
           logger.error(`Bot launch failed: ${botError}`);
+          if (looksLikeInvalidToken) {
+            logger.error("Verify TELEGRAM_BOT_TOKEN in your .env matches the token from @BotFather and restart the server.");
+          }
           console.error("Bot launch failed:", err);
         });
   } else {
