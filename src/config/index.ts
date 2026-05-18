@@ -2,16 +2,19 @@ import dotenv from "dotenv";
 import logger from "../utils/logger.ts";
 dotenv.config();
 
-const botToken = process.env.TELEGRAM_BOT_TOKEN;
+const botToken = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 if (!botToken) {
-  logger.error("CRITICAL: TELEGRAM_BOT_TOKEN is missing in environment variables.");
+  logger.error("CRITICAL: TELEGRAM_BOT_TOKEN (or BOT_TOKEN) is missing in environment variables.");
   throw new Error("Missing TELEGRAM_BOT_TOKEN");
 }
 
+const botId = process.env.TELEGRAM_BOT_ID || process.env.BOT_ID || "";
+const adminIdsRaw = process.env.TELEGRAM_ADMIN_IDS || process.env.ADMIN_IDS || "";
+
 export const config = {
   botToken: botToken,
-  botId: process.env.TELEGRAM_BOT_ID || "",
-  adminIds: (process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
+  botId,
+  adminIds: adminIdsRaw.split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
   geminiKey: process.env.GEMINI_API_KEY || "",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
   groqKey: process.env.GROQ_API_KEY || "",
