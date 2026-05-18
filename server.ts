@@ -29,11 +29,11 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string }>();
+  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'gemini', cwd: process.cwd(), isTerminal: false });
+      userStates.set(userId, { model: 'gemini', cwd: process.cwd(), isTerminal: false, zips: {} });
     }
     return userStates.get(userId)!;
   }
@@ -210,8 +210,13 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
   });
 
   bot.on("text", async (ctx) => {
-    if (ctx.message.text.startsWith("/")) return; 
-    await handleNaturalChat(ctx, ctx.message.text);
+    const t = ctx.message.text;
+    if (/^https?:\/\/github\.com\//i.test(t)) {
+      await ctx.reply("Detected GitHub URL. Use /gitclone <url> or /gitzip <url>.");
+      return;
+    }
+    if (t.startsWith("/")) return; 
+    await handleNaturalChat(ctx, t);
   });
 
   bot.on("voice", async (ctx) => {
@@ -248,45 +253,32 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
   });
 
   bot.help((ctx) => {
-    const helpText = `
-🦾 *BrokenVzn Agent - Commands*
+    const uptime = `${Math.floor(process.uptime() / 60)}m ${Math.floor(process.uptime() % 60)}s`;
+    const helpText = `╭───〔 🤖 ILOM PAIR BOT 〕───╮
+👤 User: ${ctx.from?.first_name || 'User'}  |  🆔 ${ctx.from?.id}
+⏱️ Uptime: ${uptime}
 
-*AI Chat*
-/code <p> - Gemini coding
-/groq <p> - Fast reasoning
-/qwen <p> - Code teaching
+📱 Terminal & ZIP
+• /terminal  • /ls  • /search <text>
+• /unzip <saved-name.zip>  • /lszip <saved-name.zip>
+• /zipfiles
 
-*Build & Preview*
-/build <desc> - Generate Node/Web project
-/apk <desc> - React Native source
-/webbuild <desc> - Web project source
+🧠 AI Utilities
+• /qwen <prompt>
+• no prefix chat also works
 
-*Terminal & Files*
-/shell <cmd> - Run commands (Admin)
-/files - List workspace
-/edit <p> <cont> - Edit file
-/search <text> - Search content
-/unzip - Extract ZIP
-/zip <folder> - Compress folder
+🐙 Git Utilities
+• /gitclone <repo-url>
+• /gitlookup <owner/repo>
+• /gitzip <repo-url>
 
-*Productivity*
-/remind <sec> <task> - Set reminder
-/note <text> - Quick note
-/task <text> - Add task
+⚙️ Controls
+• /menu  • /help  • /ping
 
-*GitHub*
-/github login <token> - Set token
-/push <repo> - Push latest build
-
-*Media*
-/lyrics <song> - Find lyrics
-/video <query> - Search video
-/download <url> - Download media
-
-*Admin*
-/stats /users /logs /broadcast /ban /unban
-    `;
-    ctx.replyWithMarkdown(helpText);
+🛡️ Admin
+• /adminusers  • /adminstats  • /broadcast
+╰──────────────────────────────╯`;
+    ctx.replyWithPhoto("https://cdn.tmp.malvryx.dev/files/mxv_Utp8xTViv.jpeg", { caption: helpText, parse_mode: 'Markdown' });
   });
 
   bot.command("qwen", async (ctx) => {
@@ -363,6 +355,46 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
       }
   });
 
+
+  bot.command("zipfiles", (ctx) => {
+    const state = getState(ctx.from!.id);
+    const names = Object.keys(state.zips || {});
+    if (!names.length) return ctx.reply("No saved ZIP files yet.");
+    return ctx.reply(`📦 Saved ZIP names:
+${names.map(n => `• ${n}`).join("\n")}`);
+  });
+
+  bot.command("gitclone", async (ctx) => {
+    const repoUrl = ctx.message.text.split(" ")[1];
+    if (!repoUrl) return ctx.reply("Usage: /gitclone <repo-url>");
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const target = path.join(process.cwd(), "workspaces", `${userId}_${name}_${Date.now()}`);
+    const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
+    if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed
+${out}`);
+    state.cwd = target;
+    state.clonedRepo = repoUrl;
+    return ctx.reply(`✅ Cloned ${name} and switched workspace.`);
+  });
+
+  bot.command("gitlookup", async (ctx) => {
+    const slug = ctx.message.text.split(" ")[1];
+    if (!slug || !slug.includes('/')) return ctx.reply("Usage: /gitlookup <owner/repo>");
+    const { data } = await axios.get(`https://api.github.com/repos/${slug}`);
+    return ctx.reply(`🐙 ${data.full_name}
+⭐ ${data.stargazers_count} | 🍴 ${data.forks_count}
+${data.description || 'No description'}`);
+  });
+
+  bot.command("gitzip", async (ctx) => {
+    const repoUrl = ctx.message.text.split(" ")[1];
+    if (!repoUrl) return ctx.reply("Usage: /gitzip <repo-url>");
+    const zipUrl = repoUrl.replace(/\.git$/, '') + '/archive/refs/heads/main.zip';
+    return ctx.replyWithDocument({ url: zipUrl, filename: 'repo-main.zip' });
+  });
+
   // --- FILE HANDLING ---
 
   bot.on("document", async (ctx) => {
@@ -381,12 +413,15 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
             const storageDir = path.join(process.cwd(), "storage", userId.toString());
             if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
             
-            const zipPath = path.join(storageDir, doc.file_name);
+            const ext = path.extname(doc.file_name || ".zip");
+            const savedName = `${(path.basename(doc.file_name || "upload", ext)).replace(/[^a-zA-Z0-9._-]/g, "_")}_${Date.now()}${ext}`;
+            const zipPath = path.join(storageDir, savedName);
             fs.writeFileSync(zipPath, Buffer.from(response.data));
             
             state.lastZip = zipPath;
+            state.zips[savedName] = zipPath;
             
-            ctx.reply(`✅ *ZIP Stored Successfully*\n\nFile: \`${doc.file_name}\`\n\nCommands:\n/unzip - Extract all files\n/lszip - List contents`, { parse_mode: 'Markdown' });
+            ctx.reply(`✅ *ZIP Stored Successfully*\n\nFile: \`${doc.file_name}\`\n\nCommands:\n/unzip ${savedName}\n/lszip ${savedName}\n/zipfiles`, { parse_mode: 'Markdown' });
         } catch (e: any) {
             logger.error(`File download failed for ${userId}: ${e.message}`);
             ctx.reply("❌ Failed to download file.");
@@ -400,7 +435,9 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
     const userId = ctx.from!.id;
     const state = getState(userId);
     
-    if (!state.lastZip || !fs.existsSync(state.lastZip)) {
+    const reqName = ctx.message.text.split(" ")[1];
+    const zipPath = reqName ? state.zips[reqName] : state.lastZip;
+    if (!zipPath || !fs.existsSync(zipPath)) {
       return ctx.reply("❌ No ZIP uploaded recently or file missing.");
     }
 
@@ -408,8 +445,8 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     try {
-      logger.info(`User ${userId} unzipping ${state.lastZip} to ${workspaceDir}`);
-      FileUtils.unzip(state.lastZip, workspaceDir);
+      logger.info(`User ${userId} unzipping ${zipPath} to ${workspaceDir}`);
+      FileUtils.unzip(zipPath, workspaceDir);
       state.cwd = workspaceDir;
       
       const contents = FileUtils.listFiles(workspaceDir);
@@ -423,10 +460,12 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
   bot.command("lszip", (ctx) => {
     const userId = ctx.from!.id;
     const state = getState(userId);
-    if (!state.lastZip) return ctx.reply("❌ No ZIP file found.");
+    const reqName = ctx.message.text.split(" ")[1];
+    const zipPath = reqName ? state.zips[reqName] : state.lastZip;
+    if (!zipPath) return ctx.reply("❌ No ZIP file found.");
     
     try {
-      const list = FileUtils.listZipContent(state.lastZip);
+      const list = FileUtils.listZipContent(zipPath);
       ctx.reply(`📦 *ZIP Contents:*\n\n\`\`\`\n${list.slice(0, 50).join("\n")}${list.length > 50 ? '\n...' : ''}\n\`\`\``, { parse_mode: 'Markdown' });
     } catch (e: any) {
       ctx.reply(`❌ Could not list contents: ${e.message}`);
