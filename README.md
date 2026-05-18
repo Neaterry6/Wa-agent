@@ -1,20 +1,28 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# BrokenVzn Agent v3.0 🦾
 
-# Run and deploy your AI Studio app
+The ultimate, "dirty" coding and automation agent bot for Telegram. 
 
-This contains everything you need to run your app locally.
+## Features
+- **Project Scaffold Generator**: Generate entire directory structures with a single prompt.
+- **Multi-Model Routing**: Switch between Qwen Coder, Gemini Pro, and Groq Llama 3 via `/model`.
+- **Force Join Membership**: Secure your community by requiring users to join your channel.
+- **Interactive Terminal**: Run real shell commands directly from Telegram (Admin only).
+- **GitHub Sync**: Clone, push, and manage repos from chat.
+- **Session Intelligence**: Per-user memory of current projects and settings.
 
-View your app in AI Studio: https://ai.studio/apps/5c6790b2-6284-41b6-b12e-f28c3ea6d6e9
+## Setup
+1. Fill `.env` with your API keys.
+2. Ensure you are an Admin in your force-join channel.
+3. Add `REQUIRED_CHANNEL_ID` and `ADMIN_ID` to `.env`.
+4. Run `npm start`.
 
-## Run Locally
+## Admin Dirty Commands
+- `/adminusers`: Full user registry and details.
+- `/adminstats`: System-wide statistics.
+- `/broadcast`: Send messages to all users.
+- `/terminal`: Real-time shell access.
 
-**Prerequisites:**  Node.js
+## Warning
+This bot is designed for advanced development and automation. User responsibly.
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Created with 💀 by BrokenVzn.

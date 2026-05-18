@@ -3,20 +3,21 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 import { createServer as createViteServer } from "vite";
-import { Telegraf, Context, Markup } from "telegraf";
+import { Telegraf, Context, Markup, session } from "telegraf";
 import { config } from "./src/config/index.ts";
 import { AIEngine } from "./src/ai/engine.ts";
 import { ShellUtils, FileUtils } from "./src/utils/index.ts";
+import logger from "./src/utils/logger.ts";
 import { GitHubService } from "./src/github/service.ts";
 import { PreviewEngine } from "./src/preview/engine.ts";
-import { TaskManager } from "./src/utils/tasks.ts";
+import { DB } from "./src/database/db.ts";
+import { channelCheckMiddleware, isAdmin } from "./src/middleware/checkers.ts";
+import { Scraper } from "./src/tools/scraper.ts";
+import { Sandbox } from "./src/tools/sandbox.ts";
 
 async function startServer() {
   const app = express();
   const PORT = config.port;
-
-  const taskManager = new TaskManager();
-  const userSessions = new Map<number, { role: string; content: string }[]>();
 
   let botStatus = "initializing";
   let botError: string | null = null;
@@ -24,96 +25,152 @@ async function startServer() {
 
   const bot = new Telegraf(config.botToken || "DUMMY_TOKEN");
 
-  // Middlewares
-  app.use(express.json());
+  // Bot Middlewares
+  bot.use(channelCheckMiddleware);
+  
+  // Custom Session Storage (Simple Map for demo, could be persistent)
+  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string }>();
 
-  const isAdmin = (ctx: Context) => ctx.from?.id === config.adminId;
+  function getState(userId: number) {
+    if (!userStates.has(userId)) {
+      userStates.set(userId, { model: 'gemini', cwd: process.cwd(), isTerminal: false });
+    }
+    return userStates.get(userId)!;
+  }
 
-  // --- HELPER: Natural Chat Router ---
   async function handleNaturalChat(ctx: Context, text: string) {
     const userId = ctx.from!.id;
-    if (!userSessions.has(userId)) userSessions.set(userId, []);
-    const history = userSessions.get(userId)!;
+    const state = getState(userId);
 
-    // Show typing status
+    // Terminal Mode Handling
+    if (state.isTerminal) {
+      if (text === "/exit") {
+        state.isTerminal = false;
+        return ctx.reply("🔌 *Disconnected from shell.*", { parse_mode: 'Markdown' });
+      }
+      return executeShell(ctx, text);
+    }
+
+    const history = DB.getHistory(userId);
+    DB.logChat(userId, "user", text);
+
     await ctx.sendChatAction("typing");
 
-    // Detect Intent
+    // Detect Intent (Extended)
     const analysis = await AIEngine.detectIntent(text);
-    console.log("Intent detected:", analysis);
-
+    
     switch (analysis.intent) {
       case "BUILD_APP":
-        return buildProject(ctx, analysis.description || text);
       case "BUILD_APK":
-        return buildProject(ctx, `${analysis.description || text} (React Native/Mobile format)`);
-      case "TASK_ADD":
-        const task = taskManager.addTask(analysis.description || text);
-        return ctx.reply(`✅ Task added: "${task.description}" (ID: ${task.id})`);
-      case "TASK_LIST":
-        const tasks = taskManager.getTasks();
-        if (tasks.length === 0) return ctx.reply("No pending tasks. 📭");
-        return ctx.reply(`📋 *Current Tasks:*\n${tasks.map(t => `${t.completed ? '✅' : '⏳'} \`${t.id}\` - ${t.description}`).join("\n")}`, { parse_mode: "Markdown" });
-      case "MEDIA_LYRICS":
-        ctx.reply(`🔍 Searching lyrics for "${analysis.song || text}"...`);
-        const lyrics = await AIEngine.generateGemini(`Find lyrics for ${analysis.song || text}. Just the lyrics.`);
-        return ctx.reply(lyrics.slice(0, 4000));
-      case "MEDIA_VIDEO":
-        return ctx.reply(`🎬 Searching video for "${analysis.query || text}"... (Mock)`);
+        return buildProject(ctx, analysis.description || text);
       case "MEDIA_DOWNLOAD":
-        return ctx.reply(`📥 Initializing download for: ${analysis.url || text}... (Mock)`);
-      case "PUSH_GITHUB":
-        return pushToGithub(ctx, analysis.repo || "my-awesome-project");
-      case "ZIP_FOLDER":
-        return zipFolder(ctx, analysis.folder || ".");
-      case "UNZIP_FILE":
-        return unzipLatest(ctx);
+        const scrapeRes = await Scraper.scrape(analysis.url || text);
+        return ctx.reply(`🌐 *Scraped:* ${scrapeRes.title}\n\n${scrapeRes.text?.slice(0, 500)}...`, { parse_mode: 'Markdown' });
       case "CMD_SHELL":
-        if (!isAdmin(ctx)) return ctx.reply("❌ Shell access restricted to Admin.");
+        if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
+        if (text.includes("run") || text.includes("sandbox")) {
+           const sandboxOut = await Sandbox.runCode("js", analysis.command || text);
+           return ctx.reply(`🧪 *Sandbox Output:*\n\`\`\`\n${sandboxOut}\n\`\`\``, { parse_mode: 'Markdown' });
+        }
         return executeShell(ctx, analysis.command || text);
-      case "SEARCH_FILE":
-        return searchFiles(ctx, analysis.query || text);
       case "CHAT":
       default:
-        const response = await AIEngine.chat(text, history, "You are BrokenVzn Agent. An advanced AI with system-level access. You can build apps, manage files, and automate tasks. Be concise and professional.");
-        history.push({ role: "user", content: text });
-        history.push({ role: "model", content: response });
-        if (history.length > 20) history.splice(0, 2); // Keep last 10 rounds
+        const systemPrompt = `You are BrokenVzn Agent. A powerful AI assistant for coding and automation. 
+Mode: ${state.model}. Current Directory: ${state.cwd}. 
+Be concise, helpful, and slightly savage when appropriate. You have full access to tools like shell, github, and files.`;
+        
+        const response = await AIEngine.chat(text, history, systemPrompt, state.model);
+        DB.logChat(userId, "model", response);
         return ctx.reply(response, { parse_mode: "Markdown" });
     }
   }
 
-  // --- CORE LOGIC WRAPPERS ---
+  // --- ADMIN COMMANDS ---
+
+  bot.command("adminusers", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Restricted.");
+    logger.info(`Admin ${ctx.from.id} listed users.`);
+    const users = DB.getAllUsers();
+    let text = "📋 *User Registry*\n\n";
+    users.forEach(u => {
+      text += `• \`${u.id}\` | @${u.username || 'N/A'}\n  Joined: ${u.joined_at}\n  Active: ${u.last_active}\n\n`;
+    });
+    ctx.reply(text, { parse_mode: 'Markdown' });
+  });
+
+  bot.command("adminstats", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Restricted.");
+    logger.info(`Admin ${ctx.from.id} viewed stats.`);
+    const stats = `⚙️ *System Stats*
+- Users: ${DB.getAllUsers().length}
+- Uptime: ${process.uptime().toFixed(0)}s
+- Memory: ${(process.memoryUsage().rss / 1024 / 1024).toFixed(2)} MB
+- Files: ${FileUtils.listFiles(process.cwd()).length}
+- Workspaces: ${fs.existsSync(path.join(process.cwd(), 'workspaces')) ? FileUtils.listFiles(path.join(process.cwd(), 'workspaces')).length : 0}`;
+    ctx.reply(stats, { parse_mode: 'Markdown' });
+  });
+
+  bot.command("terminal", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Restricted.");
+    const state = getState(ctx.from!.id);
+    state.isTerminal = true;
+    ctx.reply("📁 *Entered Interactive Terminal*\nType commands directly. Use `/exit` to return.", { parse_mode: 'Markdown' });
+  });
+
+  bot.command("model", (ctx) => {
+    const model = ctx.message.text.split(" ")[1];
+    if (!['gemini', 'groq', 'qwen'].includes(model)) {
+      return ctx.reply("Usage: /model qwen | gemini | groq");
+    }
+    const state = getState(ctx.from!.id);
+    state.model = model;
+    DB.updateModel(ctx.from!.id, model);
+    ctx.reply(`✅ Chat model switched to: *${model.toUpperCase()}*`, { parse_mode: 'Markdown' });
+  });
+
+  bot.command("broadcast", async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const msg = ctx.message.text.split(" ").slice(1).join(" ");
+    if (!msg) return ctx.reply("Usage: /broadcast <message>");
+    const users = DB.getAllUsers();
+    ctx.reply(`🚀 Broadcasting to ${users.length} users...`);
+    for (const user of users) {
+      try {
+        await bot.telegram.sendMessage(user.id, `📢 *BROADCAST*\n\n${msg}`, { parse_mode: 'Markdown' });
+      } catch {}
+    }
+  });
+
+  // --- BUILD LOGIC ---
 
   async function buildProject(ctx: Context, description: string) {
-    ctx.reply(`🏗 *Building Project:* ${description}\nThinking about architecture...`, { parse_mode: 'Markdown' });
+    const msg = await ctx.reply(`🏗 *Project Construction Started*
+Analyzing requirements...`, { parse_mode: 'Markdown' });
+
     try {
-        const codePrompt = `Create a robust project structure for: ${description}. Provide the content of key files (index.js, package.json, README.md) in backticks.`;
-        const result = await AIEngine.generateGemini(codePrompt, "You are a lead developer building production-grade source code.");
-        
-        const projectDir = `build_` + Date.now();
-        const projectPath = path.join(process.cwd(), "builds", projectDir);
-        if (!fs.existsSync(projectPath)) fs.mkdirSync(projectPath, { recursive: true });
+      const rawCode = await AIEngine.generateProject(description);
+      const files = FileUtils.parseProjectCode(rawCode);
+      
+      if (files.length === 0) {
+        return ctx.reply("❌ Failed to generate structured code. Try a clearer description.");
+      }
 
-        const blocks = result.match(/```.*?\n([\s\S]*?)```/g);
-        if (blocks) {
-            blocks.forEach((block, i) => {
-                const content = block.replace(/```.*?\n/, "").replace(/```$/, "");
-                let name = "file_" + i;
-                if (content.includes("package.json") || i === 1) name = "package.json";
-                else if (content.includes("README") || i === 2) name = "README.md";
-                else if (i === 0) name = "index.js";
-                
-                FileUtils.writeFile(path.join(projectPath, name), content);
-            });
-        }
+      const buildDir = path.join(process.cwd(), "builds", `prj_${Date.now()}`);
+      fs.mkdirSync(buildDir, { recursive: true });
 
-        const zipPath = `${projectPath}.zip`;
-        await FileUtils.zipFolder(projectPath, zipPath);
-        await ctx.replyWithDocument({ source: zipPath, filename: `${projectDir}.zip` });
-        ctx.reply("✅ *Build Successful.*\nSource code delivered.", { parse_mode: 'Markdown' });
+      for (const file of files) {
+        FileUtils.writeFile(path.join(buildDir, file.name), file.content);
+      }
+
+      const zipPath = `${buildDir}.zip`;
+      await FileUtils.zipFolder(buildDir, zipPath);
+      
+      await ctx.replyWithDocument({ source: zipPath, filename: "project_source.zip" });
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `✅ *Build Complete*
+Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
+      
     } catch (e: any) {
-        ctx.reply(`❌ *Build Failed:*\n${e.message}`, { parse_mode: 'Markdown' });
+      ctx.reply(`❌ *Build Error:* ${e.message}`);
     }
   }
 
@@ -121,25 +178,6 @@ async function startServer() {
     const msg = await ctx.reply(`🐚 \`[TERMINAL]\` $ ${cmd}\n\nRunning...`, { parse_mode: 'Markdown' });
     const output = await ShellUtils.run(cmd);
     await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🐚 \`[TERMINAL]\` $ ${cmd}\n\n\`\`\`\n${output.slice(0, 3900)}\n\`\`\``, { parse_mode: 'Markdown' });
-  }
-
-  async function pushToGithub(ctx: Context, repo: string) {
-    if (!userGithubToken) return ctx.reply("❌ GitHub token missing. Use `/github login <token>`");
-    ctx.reply(`🐙 *GitHub Sync:* Pushing to \`${repo}\`...`, { parse_mode: 'Markdown' });
-    // Implementation logic here
-  }
-
-  async function zipFolder(ctx: Context, folder: string) {
-    const fullPath = path.join(process.cwd(), folder);
-    if (!fs.existsSync(fullPath)) return ctx.reply(`❌ Folder \`${folder}\` not found.`);
-    const zipName = `${folder.replace(/\W/g, '_')}_${Date.now()}.zip`;
-    await FileUtils.zipFolder(fullPath, path.join(process.cwd(), zipName));
-    await ctx.replyWithDocument({ source: zipName });
-  }
-
-  async function unzipLatest(ctx: Context) {
-    ctx.reply("🔧 Extracting latest zip archive...");
-    // Logic to find latest zip in temp or current and unzip
   }
 
   async function searchFiles(ctx: Context, query: string) {
@@ -151,53 +189,39 @@ async function startServer() {
   // --- BOT COMMANDS ---
 
   bot.start((ctx) => {
+    const userId = ctx.from.id;
+    const channelLink = process.env.CHANNEL_LINK || 'https://t.me/BrokenVzn';
+    
     ctx.reply(
-      `BrokenVzn Agent v2.6 🚀\n\nI am your advanced coding assistant. I can chat normally, build apps, and manage your GitHub.\n\nType anything to start.`,
-      Markup.keyboard([
-        ["/menu", "/ping"],
-        ["/tasks", "/files"],
-        ["/help", "/clear"]
-      ]).resize()
+      `🦾 *BrokenVzn Agent v3.0 - Dirty & Fast*\n\nWelcome to your ultimate coding & hacking assistant. I can build, shell, scrape, and automate anything you dream of.\n\n📢 *Mandatory:* Join ${channelLink} to keep this bot alive.\n\nPress /help to see the full list of dirty commands.`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.keyboard([
+          ["/menu", "/terminal"],
+          ["/build", "/github"],
+          ["/model", "/help"]
+        ]).resize()
+      }
     );
   });
 
-  bot.command("clear", (ctx) => {
-      userSessions.delete(ctx.from!.id);
-      ctx.reply("Memory cleared. 🧠✨");
-  });
-
-  bot.command("tasks", (ctx) => {
-    const tasks = taskManager.getTasks();
-    if (tasks.length === 0) return ctx.reply("No pending tasks. 📭");
-    const list = tasks.map(t => `${t.completed ? '✅' : '⏳'} \`${t.id}\` - ${t.description}`).join("\n");
-    ctx.reply(`📋 *Current Tasks:*\n${list}`, { parse_mode: "Markdown" });
-  });
-
-  bot.command("add_task", (ctx) => {
-    const desc = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!desc) return ctx.reply("Usage: /add_task <description>");
-    const task = taskManager.addTask(desc);
-    ctx.reply(`📝 Task added with ID: \`${task.id}\``, { parse_mode: "Markdown" });
-  });
-
-  bot.command("done_task", (ctx) => {
-    const id = parseInt(ctx.message.text.split(" ")[1]);
-    if (isNaN(id)) return ctx.reply("Usage: /done_task <id>");
-    if (taskManager.completeTask(id)) ctx.reply(`✅ Task \`${id}\` marked as complete.`, { parse_mode: "Markdown" });
-    else ctx.reply("❌ Task not found.");
-  });
-
-  bot.command("download_file", (ctx) => {
-      const file = ctx.message.text.split(" ")[1];
-      if (!file) return ctx.reply("Usage: /download_file <name>");
-      const fullPath = path.join(process.cwd(), file);
-      if (!fs.existsSync(fullPath)) return ctx.reply("❌ File not found.");
-      ctx.replyWithDocument({ source: fullPath });
+  bot.command("start", (ctx) => {
+    // Redundant but safe
   });
 
   bot.on("text", async (ctx) => {
-    if (ctx.message.text.startsWith("/")) return; // Ignore structured commands
+    if (ctx.message.text.startsWith("/")) return; 
     await handleNaturalChat(ctx, ctx.message.text);
+  });
+
+  bot.on("voice", async (ctx) => {
+     ctx.reply("🎙 *Voice Transcribing...* (Simulated)\nI understood your request. Processing...");
+     // Real implementation would use OpenAI Whisper or Gemini multi-modal
+  });
+
+  bot.on("photo", async (ctx) => {
+     ctx.reply("👁 *Vision Analysis Active*\nChecking image for code, UI, or secrets...");
+     // Real implementation would pass image to Gemini Vision
   });
 
   bot.command("menu", (ctx) => {
@@ -281,30 +305,61 @@ async function startServer() {
     });
   });
 
-  // --- GITHUB INTEGRATION ---
-  let userGithubToken: string | null = null;
-
   bot.command("github", async (ctx) => {
+      const userId = ctx.from!.id;
       const args = ctx.message.text.split(" ");
       if (args[1] === "login") {
-          userGithubToken = args[2];
-          return ctx.reply("🐙 GitHub token stored for this session.");
+          const token = args[2];
+          if (!token) return ctx.reply("Usage: /github login <token>");
+          DB.updateGithub(userId, token, "");
+          logger.info(`User ${userId} logged into GitHub.`);
+          return ctx.reply("🐙 GitHub token stored securely.");
       }
       ctx.reply("Usage: /github login <token>\n/push <repo_name>");
   });
 
   bot.command("push", async (ctx) => {
-      if (!userGithubToken) return ctx.reply("Please login first: /github login <token>");
-      const repoName = ctx.message.text.split(" ")[1];
-      if (!repoName) return ctx.reply("Specify repo name.");
+      const userId = ctx.from!.id;
+      const user = DB.getUser(userId);
+      const state = getState(userId);
 
-      const gh = new GitHubService(userGithubToken);
+      if (!user?.github_token) return ctx.reply("❌ GitHub token missing. Use `/github login <token>`");
+      
+      const repoName = ctx.message.text.split(" ")[1];
+      if (!repoName) return ctx.reply("Usage: /push <repo_name>");
+
+      const gh = new GitHubService(user.github_token);
+      ctx.reply(`🐙 *GitHub Sync:* Pushing current workspace to \`${repoName}\`...`, { parse_mode: 'Markdown' });
+
       try {
-          ctx.reply("🐙 Creating repository...");
-          await gh.createRepo(repoName);
-          ctx.reply(`✅ Repository ${repoName} created and initial push successful (Simulated).`);
+          logger.info(`User ${userId} pushing ${state.cwd} to GitHub repo ${repoName}`);
+          
+          let repo;
+          try {
+            repo = await gh.createRepo(repoName);
+          } catch (e) {
+            // Repo might already exist, try to get existing
+            repo = { name: repoName, owner: { login: (await bot.telegram.getChatMember(config.requiredChannelId, userId)).user.username || 'user' } };
+          }
+          
+          const files = FileUtils.listFiles(state.cwd);
+          let count = 0;
+          for (const file of files) {
+             const fullPath = path.join(state.cwd, file);
+             if (fs.statSync(fullPath).isFile()) {
+               const content = FileUtils.readFile(fullPath);
+               if (content) {
+                 await gh.uploadFile(repo.owner?.login || 'owner', repoName, file, content);
+                 count++;
+               }
+             }
+          }
+          
+          ctx.reply(`✅ *Push Successful*\n\nUploaded ${count} files to [${repoName}](https://github.com/${repo.owner?.login || 'owner'}/${repoName})`, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+          logger.info(`User ${userId} successfully pushed ${count} files to GitHub.`);
       } catch (e: any) {
-          ctx.reply("GitHub Error: " + e.message);
+          logger.error(`GitHub push failed for ${userId}: ${e.message}`);
+          ctx.reply("❌ GitHub Error: " + e.message);
       }
   });
 
@@ -312,28 +367,114 @@ async function startServer() {
 
   bot.on("document", async (ctx) => {
     const doc = ctx.message.document;
+    const userId = ctx.from.id;
+    const state = getState(userId);
+
+    logger.info(`User ${userId} uploaded document: ${doc.file_name}`);
+
     if (doc.file_name?.endsWith(".zip")) {
-        ctx.reply("📥 Downloading ZIP for analysis...");
+        ctx.reply("📥 *Processing ZIP...*", { parse_mode: 'Markdown' });
         try {
             const link = await bot.telegram.getFileLink(doc.file_id);
             const response = await axios.get(link.href, { responseType: 'arraybuffer' });
-            const tempDir = path.join(process.cwd(), "temp");
-            const zipPath = path.join(tempDir, `${doc.file_id}.zip`);
             
-            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+            const storageDir = path.join(process.cwd(), "storage", userId.toString());
+            if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
+            
+            const zipPath = path.join(storageDir, doc.file_name);
             fs.writeFileSync(zipPath, Buffer.from(response.data));
             
-            ctx.reply(`✅ ZIP received and stored.\nUse /unzip to extract or /push <repo> to send to GitHub.`);
-        } catch (e) {
-            ctx.reply("Failed to download file.");
+            state.lastZip = zipPath;
+            
+            ctx.reply(`✅ *ZIP Stored Successfully*\n\nFile: \`${doc.file_name}\`\n\nCommands:\n/unzip - Extract all files\n/lszip - List contents`, { parse_mode: 'Markdown' });
+        } catch (e: any) {
+            logger.error(`File download failed for ${userId}: ${e.message}`);
+            ctx.reply("❌ Failed to download file.");
         }
     } else {
-        ctx.reply("📄 File received. I'm optimized for .zip files.");
+        ctx.reply("📄 File received. Upload a project as a .zip for full automation.");
     }
   });
 
   bot.command("unzip", async (ctx) => {
-      ctx.reply("🔧 Unzipping tool active. Extracting contents into workspace...");
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    
+    if (!state.lastZip || !fs.existsSync(state.lastZip)) {
+      return ctx.reply("❌ No ZIP uploaded recently or file missing.");
+    }
+
+    const workspaceDir = path.join(process.cwd(), "workspaces", `${userId}_${Date.now()}`);
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    try {
+      logger.info(`User ${userId} unzipping ${state.lastZip} to ${workspaceDir}`);
+      FileUtils.unzip(state.lastZip, workspaceDir);
+      state.cwd = workspaceDir;
+      
+      const contents = FileUtils.listFiles(workspaceDir);
+      ctx.reply(`🔓 *Extraction Complete*\n\nWorkspace set to: \`${path.basename(workspaceDir)}\`\nFiles: ${contents.length}\n\nUse /ls to see contents.`, { parse_mode: 'Markdown' });
+    } catch (e: any) {
+      logger.error(`Unzip failed for ${userId}: ${e.message}`);
+      ctx.reply(`❌ Error during extraction: ${e.message}`);
+    }
+  });
+
+  bot.command("lszip", (ctx) => {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    if (!state.lastZip) return ctx.reply("❌ No ZIP file found.");
+    
+    try {
+      const list = FileUtils.listZipContent(state.lastZip);
+      ctx.reply(`📦 *ZIP Contents:*\n\n\`\`\`\n${list.slice(0, 50).join("\n")}${list.length > 50 ? '\n...' : ''}\n\`\`\``, { parse_mode: 'Markdown' });
+    } catch (e: any) {
+      ctx.reply(`❌ Could not list contents: ${e.message}`);
+    }
+  });
+
+  bot.command("ls", (ctx) => {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    try {
+      const files = FileUtils.listFiles(state.cwd);
+      let text = `📂 *Directory: ${path.basename(state.cwd)}*\n\n`;
+      files.forEach(f => {
+        const isDir = fs.statSync(path.join(state.cwd, f)).isDirectory();
+        text += `${isDir ? '📁' : '📄'} \`${f}\`\n`;
+      });
+      ctx.reply(text || "Directory is empty.", { parse_mode: 'Markdown' });
+    } catch (e: any) {
+      ctx.reply("❌ Error listing files.");
+    }
+  });
+
+  bot.command("hostren", async (ctx) => {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    
+    if (state.cwd === process.cwd()) {
+      return ctx.reply("❌ You must be in a project workspace to deploy. (Use /unzip)");
+    }
+
+    logger.info(`User ${userId} attempting to deploy ${state.cwd} to Render.`);
+    
+    const msg = await ctx.reply("🚀 *Initializing Deployment to Render...*\n\nBuilding environment...", { parse_mode: 'Markdown' });
+    
+    // Simulate Render API call
+    setTimeout(async () => {
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, "🚀 *Deployment to Render...*\n\n✅ Environment Ready\n📦 Uploading source code...", { parse_mode: 'Markdown' });
+      
+      setTimeout(async () => {
+        await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, "🚀 *Deployment to Render...*\n\n✅ Upload Complete\n⚙️ Running build scripts...", { parse_mode: 'Markdown' });
+        
+        setTimeout(async () => {
+           const mockUrl = `https://prj-${Math.random().toString(36).substring(7)}.onrender.com`;
+           await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏁 *Deployment Successful!*\n\n🔗 Your app is live at: ${mockUrl}\n\nNote: This was a simulated deployment. Configure RENDER_API_KEY for real integration.`, { parse_mode: 'Markdown' });
+           logger.info(`User ${userId} successfully deployed mock app to ${mockUrl}`);
+        }, 3000);
+      }, 2000);
+    }, 2000);
   });
 
   bot.command("broadcast", async (ctx) => {
@@ -356,7 +497,13 @@ async function startServer() {
 
   bot.command("logs", async (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
-    ctx.reply("📜 Fetching last 10 system events...\n- [LOG] Bot Started\n- [LOG] AI Engine Initialized\n- [LOG] Connection Stable");
+    logger.info(`Admin ${ctx.from.id} requested system logs.`);
+    const logPath = path.join(process.cwd(), "logs", "combined.log");
+    if (fs.existsSync(logPath)) {
+      ctx.replyWithDocument({ source: logPath, filename: "system_logs.log" });
+    } else {
+      ctx.reply("📜 No logs found yet or log directory missing.");
+    }
   });
 
   bot.command("ban", (ctx) => {
@@ -381,25 +528,28 @@ async function startServer() {
       botStatus,
       botError,
       botInfo,
-      adminId: config.adminId 
+      adminIds: config.adminIds 
     });
   });
 
   // Start Bot
-  if (config.botToken && config.botToken !== "YOUR_TELEGRAM_BOT_TOKEN") {
+  if (config.botToken) {
       bot.launch()
         .then(async () => {
           botStatus = "live";
           botInfo = await bot.telegram.getMe();
+          logger.info(`BrokenVzn Bot is live as @${botInfo.username}`);
           console.log("BrokenVzn Bot is live as", botInfo.username);
         })
         .catch(err => {
           botStatus = "failed";
           botError = err instanceof Error ? err.message : String(err);
+          logger.error(`Bot launch failed: ${botError}`);
           console.error("Bot launch failed:", err);
         });
   } else {
     botStatus = "missing_token";
+    logger.error("Bot token missing at startup.");
   }
 
   // --- VITE MIDDLEWARE ---

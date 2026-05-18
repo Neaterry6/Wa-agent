@@ -2,8 +2,12 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import archiver from "archiver";
+import { createRequire } from "module";
 import AdmZip from "adm-zip";
+
+const require = createRequire(import.meta.url);
+const archiver = require("archiver");
+
 
 const execAsync = promisify(exec);
 
@@ -36,6 +40,11 @@ export class FileUtils {
   static unzip(zipPath: string, targetPath: string) {
     const zip = new AdmZip(zipPath);
     zip.extractAllTo(targetPath, true);
+  }
+
+  static listZipContent(zipPath: string): string[] {
+    const zip = new AdmZip(zipPath);
+    return zip.getEntries().map(e => e.entryName);
   }
 
   static writeFile(filePath: string, content: string) {
@@ -85,5 +94,18 @@ export class FileUtils {
       }
     });
     return fileList;
+  }
+
+  static parseProjectCode(raw: string) {
+    const files: { name: string; content: string }[] = [];
+    const regex = /===\s*([\w\-\.\/]+)\s*===\s*([\s\S]*?)(?===\s*[\w\-\.\/]+\s*===|$)/g;
+    let match;
+    while ((match = regex.exec(raw)) !== null) {
+      files.push({
+        name: match[1].trim(),
+        content: match[2].trim()
+      });
+    }
+    return files;
   }
 }

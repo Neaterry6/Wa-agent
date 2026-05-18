@@ -14,30 +14,43 @@ export class AIEngine {
   });
   private static groq = new Groq({ apiKey: config.groqKey });
 
-  static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "") {
-    if (!config.geminiKey) throw new Error("GEMINI_API_KEY missing");
-    
-    // Create a chat session manually or use chats.create but sendMessage is cleaner
-    const chat = this.ai.chats.create({
-      model: "gemini-2.0-flash", // Use a valid model from skill
-      config: {
-        systemInstruction
-      }
-    });
+  static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", model: string = "gemini") {
+    if (model === "gemini") {
+        const chat = this.ai.chats.create({
+          model: config.geminiModel, 
+          config: { systemInstruction }
+        });
+        const result = await chat.sendMessage({ message: prompt });
+        return result.text;
+    } else if (model === "groq") {
+        return this.generateGroq(prompt, config.groqModel);
+    } else if (model === "qwen") {
+        return this.generateQwen(prompt);
+    }
+    return this.generateGemini(prompt, systemInstruction);
+  }
 
-    // Handle history manually if needed or just use current session
-    // For this implementation, we'll just send the message
-    const result = await chat.sendMessage({ message: prompt });
-    return result.text;
+  static async generateProject(description: string) {
+    const system = `You are an elite full-stack developer. Generate a complete project based on the description.
+Use the format:
+=== filename.ext ===
+code content
+=== nextfile.ext ===
+code content
+
+Provide package.json, main entry files, and readme. Be extremely thorough.`;
+    
+    return this.generateGemini(description, system);
   }
 
   static async detectIntent(text: string) {
     const system = `You are an intent classifier for BrokenVzn Agent.
-Available intents: BUILD_APP, BUILD_APK, PUSH_GITHUB, ZIP_FOLDER, UNZIP_FILE, CMD_SHELL, SEARCH_FILE, TASK_ADD, TASK_LIST, MEDIA_LYRICS, MEDIA_VIDEO, MEDIA_DOWNLOAD, CHAT.
+Available intents: BUILD_APP, PUSH_GITHUB, ZIP_FOLDER, CMD_SHELL, SEARCH_FILE, MEDIA_DOWNLOAD, CHAT.
 Respond ONLY with the intent name and optional parameters in JSON format.
-Example: {"intent": "BUILD_APP", "description": "weather app"}
-Example: {"intent": "MEDIA_LYRICS", "song": "Bohemian Rhapsody"}
-Example: {"intent": "MEDIA_DOWNLOAD", "url": "https://example.com/video.mp4"}
+Examples:
+{"intent": "BUILD_APP", "description": "weather website"}
+{"intent": "CMD_SHELL", "command": "ls -la"}
+{"intent": "MEDIA_DOWNLOAD", "url": "https://google.com"}
 `;
     const response = await this.generateGemini(text, system);
     try {
@@ -50,7 +63,7 @@ Example: {"intent": "MEDIA_DOWNLOAD", "url": "https://example.com/video.mp4"}
   static async generateGemini(prompt: string, systemInstruction?: string) {
     if (!config.geminiKey) throw new Error("GEMINI_API_KEY missing");
     const response = await this.ai.models.generateContent({ 
-        model: "gemini-2.0-flash",
+        model: config.geminiModel,
         contents: prompt,
         config: {
             systemInstruction
@@ -59,7 +72,7 @@ Example: {"intent": "MEDIA_DOWNLOAD", "url": "https://example.com/video.mp4"}
     return response.text;
   }
 
-  static async generateGroq(prompt: string, model: string = "llama-3.3-70b-versatile") {
+  static async generateGroq(prompt: string, model: string = config.groqModel) {
     if (!config.groqKey) throw new Error("GROQ_API_KEY missing");
     const chatCompletion = await this.groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
