@@ -15,6 +15,14 @@ import { channelCheckMiddleware, isAdmin } from "./src/middleware/checkers.ts";
 import { Scraper } from "./src/tools/scraper.ts";
 import { Sandbox } from "./src/tools/sandbox.ts";
 
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function startServer() {
   const app = express();
   const PORT = config.port;
@@ -135,7 +143,7 @@ Behavior rules: roast=savage and witty, helpful=friendly and clear, coder=techni
         
         const response = await AIEngine.chat(text, history, systemPrompt, state.model);
         await DB.logChat(userId, "model", response);
-        return ctx.reply(response, { parse_mode: "Markdown" });
+        return ctx.reply(`<pre>${escapeHtml(response)}</pre>`, { parse_mode: "HTML" });
     }
   }
 
