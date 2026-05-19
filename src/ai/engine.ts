@@ -17,7 +17,10 @@ export class AIEngine {
   private static groq = new Groq({ apiKey: config.groqKey });
 
   private static async withFallback(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", preferred: string = "gemini") {
-    const order = [preferred, "groq", "qwen", "broken", "gemini"].filter((v, i, a) => a.indexOf(v) === i);
+    const fallbackOrder = preferred === "broken"
+      ? ["broken", "gemini", "groq", "qwen"]
+      : [preferred, "gemini", "groq", "qwen"];
+    const order = fallbackOrder.filter((v, i, a) => a.indexOf(v) === i);
     const errors: string[] = [];
 
     for (const provider of order) {
