@@ -29,7 +29,7 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string }>();
+  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
@@ -41,14 +41,43 @@ async function startServer() {
   async function handleNaturalChat(ctx: Context, text: string) {
     const userId = ctx.from!.id;
     const state = getState(userId);
+    const normalizedText = text.trim();
 
     // Terminal Mode Handling
     if (state.isTerminal) {
-      if (text === "/exit") {
+      if (normalizedText === "/exit" || normalizedText.toLowerCase() === "exit") {
         state.isTerminal = false;
         return ctx.reply("🔌 *Disconnected from shell.*", { parse_mode: 'Markdown' });
       }
       return executeShell(ctx, text);
+    }
+
+    // Natural terminal/git commands (no slash prefix needed)
+    const gitCloneUrlMatch = normalizedText.match(/(?:run\s+)?git\s*clone\s+(https?:\/\/github\.com\/\S+)/i)
+      || normalizedText.match(/(?:run\s+)?gitclone\s+(https?:\/\/github\.com\/\S+)/i);
+    if (gitCloneUrlMatch) {
+      if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
+      const repoUrl = gitCloneUrlMatch[1].trim();
+      return cloneRepoToWorkspace(ctx, repoUrl);
+    }
+
+    if (state.pendingGithubPush) {
+      const parsedRepo = normalizedText.match(/(?:repo|repository|url)\s*[:=]?\s*(https?:\/\/github\.com\/[^\s]+|[\w.-]+\/[\w.-]+)/i);
+      const parsedToken = normalizedText.match(/(?:token|github token)\s*[:=]?\s*(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/i);
+      if (!parsedRepo || !parsedToken) {
+        return ctx.reply("Send both in one message:\nrepo: owner/repo (or full GitHub URL)\ntoken: <github token>");
+      }
+      state.pendingGithubPush = false;
+      return pushWorkspaceToGithub(ctx, parsedRepo[1], parsedToken[1]);
+    }
+
+    if (/(run\s+)?git\s+push/i.test(normalizedText) || /(run\s+)?push\s+to\s+github/i.test(normalizedText)) {
+      if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
+      const inlineRepo = normalizedText.match(/(?:to|repo|repository)\s+(https?:\/\/github\.com\/[^\s]+|[\w.-]+\/[\w.-]+)/i)?.[1];
+      const inlineToken = normalizedText.match(/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/i)?.[1];
+      if (inlineRepo && inlineToken) return pushWorkspaceToGithub(ctx, inlineRepo, inlineToken);
+      state.pendingGithubPush = true;
+      return ctx.reply("Send GitHub repo + token in one message.\nExample:\nrepo: owner/repo\ntoken: ghp_xxx");
     }
 
     const history = DB.getHistory(userId);
@@ -117,6 +146,20 @@ Be concise, helpful, and slightly savage when appropriate. You have full access 
     ctx.reply("📁 *Entered Interactive Terminal*\nType commands directly. Use `/exit` to return.", { parse_mode: 'Markdown' });
   });
 
+  bot.command("shell", async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Restricted.");
+    const cmd = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!cmd) return ctx.reply("Usage: /shell <command>");
+    return executeShell(ctx, cmd);
+  });
+
+  bot.command("exit", (ctx) => {
+    const state = getState(ctx.from!.id);
+    if (!state.isTerminal) return ctx.reply("ℹ️ You are not currently in terminal mode.");
+    state.isTerminal = false;
+    return ctx.reply("🔌 *Disconnected from shell.*", { parse_mode: 'Markdown' });
+  });
+
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
     const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
@@ -180,6 +223,43 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
     const msg = await ctx.reply(`🐚 \`[TERMINAL]\` $ ${cmd}\n\nRunning...`, { parse_mode: 'Markdown' });
     const output = await ShellUtils.run(cmd);
     await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🐚 \`[TERMINAL]\` $ ${cmd}\n\n\`\`\`\n${output.slice(0, 3900)}\n\`\`\``, { parse_mode: 'Markdown' });
+  }
+
+  async function cloneRepoToWorkspace(ctx: Context, repoUrl: string) {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const target = path.join(process.cwd(), "workspaces", `${userId}_${name}_${Date.now()}`);
+    const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
+    if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed\n${out}`);
+    state.cwd = target;
+    state.clonedRepo = repoUrl;
+    return ctx.reply(`✅ Cloned ${name} and switched workspace.`);
+  }
+
+  async function pushWorkspaceToGithub(ctx: Context, repoInput: string, githubToken: string) {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    const repoSlug = repoInput.replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/,"");
+    if (!repoSlug.includes("/")) return ctx.reply("❌ Invalid repo. Use owner/repo or full GitHub URL.");
+    const [owner, repoName] = repoSlug.split("/");
+    if (!owner || !repoName) return ctx.reply("❌ Invalid repo. Use owner/repo.");
+
+    const gh = new GitHubService(githubToken);
+    const files = FileUtils.listFiles(state.cwd);
+    let count = 0;
+    for (const file of files) {
+      const fullPath = path.join(state.cwd, file);
+      if (fs.statSync(fullPath).isFile()) {
+        const content = FileUtils.readFile(fullPath);
+        if (content) {
+          await gh.uploadFile(owner, repoName, file, content);
+          count++;
+        }
+      }
+    }
+    DB.updateGithub(userId, githubToken, owner);
+    return ctx.reply(`✅ *Push Successful*\n\nUploaded ${count} files to https://github.com/${owner}/${repoName}`, { parse_mode: "Markdown", link_preview_options: { is_disabled: true } });
   }
 
   async function searchFiles(ctx: Context, query: string) {
@@ -265,7 +345,8 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
 ⏱️ Uptime: ${uptime}
 
 📱 Terminal & ZIP
-• /terminal  • /ls  • /search <text>
+• /terminal  • /shell <command>  • /exit
+• /ls  • /search <text>
 • /unzip <saved-name.zip>  • /lszip <saved-name.zip>
 • /zipfiles
 
@@ -326,35 +407,11 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
       const repoName = ctx.message.text.split(" ")[1];
       if (!repoName) return ctx.reply("Usage: /push <repo_name>");
 
-      const gh = new GitHubService(user.github_token);
-      ctx.reply(`🐙 *GitHub Sync:* Pushing current workspace to \`${repoName}\`...`, { parse_mode: 'Markdown' });
-
       try {
           logger.info(`User ${userId} pushing ${state.cwd} to GitHub repo ${repoName}`);
-          
-          let repo;
-          try {
-            repo = await gh.createRepo(repoName);
-          } catch (e) {
-            // Repo might already exist, try to get existing
-            repo = { name: repoName, owner: { login: (await bot.telegram.getChatMember(config.requiredChannelId, userId)).user.username || 'user' } };
-          }
-          
-          const files = FileUtils.listFiles(state.cwd);
-          let count = 0;
-          for (const file of files) {
-             const fullPath = path.join(state.cwd, file);
-             if (fs.statSync(fullPath).isFile()) {
-               const content = FileUtils.readFile(fullPath);
-               if (content) {
-                 await gh.uploadFile(repo.owner?.login || 'owner', repoName, file, content);
-                 count++;
-               }
-             }
-          }
-          
-          ctx.reply(`✅ *Push Successful*\n\nUploaded ${count} files to [${repoName}](https://github.com/${repo.owner?.login || 'owner'}/${repoName})`, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
-          logger.info(`User ${userId} successfully pushed ${count} files to GitHub.`);
+          const repoOwner = (user.github_repo && user.github_repo.includes("/") ? user.github_repo.split("/")[0] : null) || "owner";
+          await pushWorkspaceToGithub(ctx, `${repoOwner}/${repoName}`, user.github_token);
+          logger.info(`User ${userId} successfully pushed files to GitHub.`);
       } catch (e: any) {
           logger.error(`GitHub push failed for ${userId}: ${e.message}`);
           ctx.reply("❌ GitHub Error: " + e.message);
@@ -373,16 +430,7 @@ ${names.map(n => `• ${n}`).join("\n")}`);
   bot.command("gitclone", async (ctx) => {
     const repoUrl = ctx.message.text.split(" ")[1];
     if (!repoUrl) return ctx.reply("Usage: /gitclone <repo-url>");
-    const userId = ctx.from!.id;
-    const state = getState(userId);
-    const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const target = path.join(process.cwd(), "workspaces", `${userId}_${name}_${Date.now()}`);
-    const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
-    if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed
-${out}`);
-    state.cwd = target;
-    state.clonedRepo = repoUrl;
-    return ctx.reply(`✅ Cloned ${name} and switched workspace.`);
+    return cloneRepoToWorkspace(ctx, repoUrl);
   });
 
   bot.command("gitlookup", async (ctx) => {
