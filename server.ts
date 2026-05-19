@@ -119,10 +119,10 @@ Be concise, helpful, and slightly savage when appropriate. You have full access 
 
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen" };
+    const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
     const model = aliases[rawArg];
     if (!model) {
-      return ctx.reply("Usage: /model gemini | groq | qwen (alias: grog)");
+      return ctx.reply("Usage: /model gemini | groq | qwen | broken (alias: grog)");
     }
     const state = getState(ctx.from!.id);
     state.model = model;
