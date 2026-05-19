@@ -23,6 +23,21 @@ function escapeHtml(text: string) {
     .replace(/>/g, "&gt;");
 }
 
+function splitMessage(text: string, maxLength = 4096): string[] {
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf("\n", maxLength);
+    if (splitAt === -1 || splitAt < maxLength * 0.5) splitAt = maxLength;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n+/, "");
+  }
+
+  if (remaining.length) chunks.push(remaining);
+  return chunks;
+}
+
 async function startServer() {
   const app = express();
   const PORT = config.port;
@@ -63,6 +78,28 @@ async function startServer() {
         await bot.telegram.sendMessage(adminId, text);
       } catch {}
     }));
+  }
+
+  async function sendLongTextResponse(ctx: Context, text: string, asHtml = false) {
+    const hardLimit = 4096;
+    const chunks = splitMessage(text, hardLimit);
+
+    if (chunks.length > 1) {
+      for (const chunk of chunks) {
+        await ctx.reply(asHtml ? `<pre>${escapeHtml(chunk)}</pre>` : chunk, asHtml ? { parse_mode: "HTML" } : undefined);
+      }
+
+      if (text.length > hardLimit * 3) {
+        const buffer = Buffer.from(text, "utf-8");
+        await ctx.replyWithDocument(
+          { source: buffer, filename: `response-${Date.now()}.txt` },
+          { caption: "📄 Full response attached as TXT." }
+        );
+      }
+      return;
+    }
+
+    await ctx.reply(asHtml ? `<pre>${escapeHtml(text)}</pre>` : text, asHtml ? { parse_mode: "HTML" } : undefined);
   }
 
   async function handleNaturalChat(ctx: Context, text: string) {
@@ -143,7 +180,7 @@ Behavior rules: roast=savage and witty, helpful=friendly and clear, coder=techni
         
         const response = await AIEngine.chat(text, history, systemPrompt, state.model);
         await DB.logChat(userId, "model", response);
-        return ctx.reply(`<pre>${escapeHtml(response)}</pre>`, { parse_mode: "HTML" });
+        return sendLongTextResponse(ctx, response, true);
     }
   }
 
@@ -403,15 +440,37 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.command("menu", (ctx) => {
-    ctx.reply(
-      "BrokenVzn Agent Menu:",
-      Markup.inlineKeyboard([
+    const menuText = `📋 *BrokenVzn Agent Menu*
+
+Use \`/\` prefix for slash commands.
+For quick natural input, you can also send plain text like: \`git clone <url>\`, \`unzip my.zip\`, or \`model groq\`.
+
+*Core Commands*
+• /help
+• /model <gemini|groq|qwen|broken>
+• /setmode <roast|helpful|coder|strict>
+
+*Project & GitHub*
+• /build <prompt>
+• /gitclone <repo_url>
+• /gitzip <repo_url|owner/repo>
+• /push <repo_name> *(needs /github login <token> first)*
+
+*Files & Utilities*
+• /unzip <zip_name>
+• /lszip <zip_name>
+• /zipfiles
+• /terminal *(admin)*`;
+
+    ctx.reply(menuText, {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
         [Markup.button.callback("🤖 AI Chat", "ai_chat"), Markup.button.callback("💻 Code Builder", "code_builder")],
         [Markup.button.callback("🌐 Preview Builder", "preview_builder"), Markup.button.callback("🐙 GitHub Tools", "github_tools")],
         [Markup.button.callback("🎵 Media Tools", "media_tools"), Markup.button.callback("🛠 Utilities", "utils_tools")],
         [Markup.button.callback("🛡 Admin Panel", "admin_panel")]
       ])
-    );
+    });
   });
 
   bot.action("ai_chat", (ctx) => ctx.reply("Use /code or /groq to start chatting with AI."));
