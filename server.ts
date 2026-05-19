@@ -49,6 +49,20 @@ function splitMessage(text: string, maxLength = 4096): string[] {
   return chunks;
 }
 
+const SUNO_WRAPPER_BASE = process.env.SUNO_WRAPPER_BASE || "https://api.sunoapi.org";
+const SUNO_ACCESS_TOKEN = process.env.SUNO_ACCESS_TOKEN || "";
+const SUNO_MODEL = process.env.SUNO_MODEL || "V4_5";
+
+function buildSunoHeaders() {
+  return {
+    Authorization: `Bearer ${SUNO_ACCESS_TOKEN}`,
+    "X-API-KEY": SUNO_ACCESS_TOKEN,
+    "X-Access-Token": SUNO_ACCESS_TOKEN,
+    "Content-Type": "application/json",
+    "User-Agent": "BrokenVzn-Agent/3.0"
+  };
+}
+
 async function startServer() {
   const app = express();
   const PORT = config.port;
@@ -140,6 +154,11 @@ You can also send plain text like: git clone <url>, unzip my.zip, or model groq.
 │  • /musicgen or /suno <prompt>
 │  • /ssweb <url> (web screenshot)
 
+├─ 🌐 Internet Tools
+│  • /search <query> (web search)
+│  • /scrape <url> (extract webpage text)
+│  • /run <lang> <code> (run snippets)
+
 └─ 🛠 Files & Utility
    • /unzip <zip_name> • /lszip <zip_name> • /zipfiles
    • /terminal (admin)
@@ -164,6 +183,9 @@ AI + Chat
 • normal chat: just send any message
 
 Dev Tools
+• /search <query>
+• /scrape <url>
+• /run <lang> <code>
 • /gitclone <repo_url>
 • /gitlookup <repo_url|owner/repo>
 • /gitzip <repo_url|owner/repo>
@@ -541,7 +563,7 @@ ${chunks.join(' | ')}` : '';
     }
     if (t.startsWith("/")) return;
 
-    const prefixless = t.match(/^(help|menu|build|create|unzip|lszip|zipfiles|model|setmode|play|video|ssweb|musicgen|suno|transcribe|tts|buttonmode|voicemode)\b/i);
+    const prefixless = t.match(/^(help|menu|build|create|unzip|lszip|zipfiles|model|setmode|play|video|ssweb|musicgen|suno|transcribe|tts|buttonmode|voicemode|search)\b/i);
     if (prefixless) {
       const cmd = prefixless[1].toLowerCase();
       const tail = t.slice(prefixless[0].length).trim();
@@ -658,6 +680,79 @@ ${chunks.join(' | ')}` : '';
     const res = await axios.get(apiUrl, { responseType: 'arraybuffer', timeout: 60000 });
     return ctx.replyWithPhoto({ source: Buffer.from(res.data) }, { caption: `🖼️ Full-page screenshot of:
 ${url}` });
+  });
+
+  bot.command("search", async (ctx) => {
+    const query = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!query) return ctx.reply("Usage: /search <query>");
+    try {
+      const { data } = await axios.get("https://api.duckduckgo.com/", {
+        params: { q: query, format: "json", no_html: 1, no_redirect: 1 },
+        timeout: 20000
+      });
+      const related = Array.isArray(data?.RelatedTopics) ? data.RelatedTopics : [];
+      const lines: string[] = [];
+      for (const item of related) {
+        if (item?.Text && item?.FirstURL) lines.push(`• ${item.Text}\n  ${item.FirstURL}`);
+        if (Array.isArray(item?.Topics)) {
+          for (const topic of item.Topics) {
+            if (topic?.Text && topic?.FirstURL) lines.push(`• ${topic.Text}\n  ${topic.FirstURL}`);
+            if (lines.length >= 5) break;
+          }
+        }
+        if (lines.length >= 5) break;
+      }
+      const heading = data?.Heading ? `🔎 ${data.Heading}\n` : "";
+      if (!lines.length) return ctx.reply(`No quick web results found for: ${query}`);
+      return ctx.reply(`${heading}${lines.slice(0, 5).join("\n\n")}`);
+    } catch (e: any) {
+      return ctx.reply(`❌ Search failed: ${e.message}`);
+    }
+  });
+
+  bot.command("suno", async (ctx) => {
+    if (!SUNO_ACCESS_TOKEN) return ctx.reply("❌ Missing SUNO_ACCESS_TOKEN in environment.");
+    const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!prompt) return ctx.reply("Usage: /suno <prompt>\nExample: /suno I love you afrobeat by Kenzy");
+
+    const waitMsg = await ctx.reply("🎵 Suno generation started...\n⏳ Please wait 1-4 minutes.");
+    try {
+      const { data } = await axios.post(`${SUNO_WRAPPER_BASE}/api/v1/generate`, {
+        customMode: true,
+        instrumental: false,
+        model: SUNO_MODEL,
+        prompt
+      }, { timeout: 45000, headers: buildSunoHeaders() });
+      const taskId = data?.data?.taskId || data?.taskId || data?.result?.taskId;
+      if (!taskId) throw new Error("No Suno task ID returned");
+
+      let audioUrl = "";
+      for (let i = 0; i < 35; i += 1) {
+        await new Promise((r) => setTimeout(r, 7000));
+        const poll = await axios.get(`${SUNO_WRAPPER_BASE}/api/v1/generate/record-info`, {
+          params: { taskId }, timeout: 45000, headers: buildSunoHeaders()
+        });
+        const raw = poll.data?.data || poll.data?.result || poll.data;
+        const firstSong = Array.isArray(raw?.songs) ? raw.songs[0] : null;
+        const firstClip = Array.isArray(raw?.clips) ? raw.clips[0] : null;
+        audioUrl = firstSong?.audioUrl || firstSong?.audio_url || firstClip?.audioUrl || firstClip?.audio_url || raw?.audioUrl || raw?.audio_url || raw?.url || "";
+        const status = String(raw?.status || raw?.state || "").toLowerCase();
+        if (audioUrl) break;
+        if (["failed", "error", "cancelled"].includes(status)) throw new Error(raw?.message || "generation failed");
+      }
+      if (!audioUrl) throw new Error("Generation timeout without audio URL");
+
+      await ctx.replyWithAudio({ url: audioUrl }, { caption: `🎵 Suno track ready\n🆔 Task: ${taskId}` });
+      return ctx.telegram.deleteMessage(ctx.chat!.id, waitMsg.message_id).catch(() => null);
+    } catch (e: any) {
+      return ctx.reply(`❌ Suno generation failed: ${e.message}`);
+    }
+  });
+
+  bot.command("musicgen", async (ctx) => {
+    const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    (ctx as any).message.text = `/suno ${prompt}`;
+    await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: (ctx as any).message.text } });
   });
 
   bot.command("ping", (ctx) => {
