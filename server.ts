@@ -97,7 +97,7 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string }>();
+  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
@@ -395,13 +395,19 @@ Analyzing requirements...`, { parse_mode: 'Markdown' });
       const enhancedDescription = `${description}
 
 Tech stack requirement from user: ${techStack}.
-Respect this stack and generate all required files.`;
+Respect this stack and generate all required files.
+Return output in explicit multi-file format that can be parsed:
+=== path/to/file.ext ===
+<file content>`;
       const rawCode = await AIEngine.generateProject(enhancedDescription);
       const files = FileUtils.parseProjectCode(rawCode);
 
       if (files.length === 0) {
         return ctx.reply("❌ Failed to generate structured code. Ask for a project with explicit files like `=== index.js ===`.");
       }
+
+      const structure = files.map((f) => `- ${f.name}`).join("\n");
+      await ctx.reply(`📂 *Project Structure:*\n${structure}`, { parse_mode: "Markdown" });
 
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
 2/4 Creating directories and files...`, { parse_mode: 'Markdown' });
@@ -411,7 +417,7 @@ Respect this stack and generate all required files.`;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const next = files[i + 1];
-        await ctx.reply(`🧠 Coded: \`${file.name}\`${next ? `\n⏭ Next: \`${next.name}\`` : ""}`, { parse_mode: "Markdown" });
+        await ctx.reply(`✍️ Coding \`${file.name}\`...\n✅ Completed \`${file.name}\`${next ? `\n➡️ Next: \`${next.name}\`` : ""}`, { parse_mode: "Markdown" });
         FileUtils.writeFile(path.join(buildDir, file.name), file.content);
       }
 
@@ -429,7 +435,7 @@ Respect this stack and generate all required files.`;
       state.pendingDeployDir = buildDir;
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `✅ *Build Complete*
 Created structure, generated code for ${files.length} files, and delivered the zip file.`, { parse_mode: 'Markdown' });
-      await ctx.reply("Deploy now to Render free plan? Reply with `yes deploy` or `no deploy`.", { parse_mode: "Markdown" });
+      await ctx.reply("Do you want me to deploy this project to Render?\nReply with `yes deploy` or `no deploy`.", { parse_mode: "Markdown" });
 
     } catch (e: any) {
       ctx.reply(`❌ *Build Error:* ${e.message}`, { parse_mode: 'Markdown' });
@@ -573,10 +579,16 @@ function extractReplyContext(msg: any): string {
 ${chunks.join(' | ')}` : '';
 }
 
-  bot.on("text", async (ctx) => {
+  bot.on("text", async (ctx, next) => {
     await notifyAdminsUserActivity(ctx, "text_message");
     const t = ctx.message.text.trim();
     const lower = t.toLowerCase();
+
+    // Let explicit slash commands continue through Telegraf command handlers.
+    // Without this, this generic text middleware can swallow commands defined later.
+    if (t.startsWith("/")) {
+      return next();
+    }
 
     if (lower === "help" || lower === "/help") {
       return ctx.reply(getHelpText(ctx));
@@ -766,10 +778,10 @@ ${chunks.join(' | ')}` : '';
 
   const handleBuildCommand = async (ctx: Context) => {
     const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
-    if (!prompt) return ctx.reply("Usage: /build <project description>");
+    if (!prompt) return ctx.reply("🏗 Project Construction Started\nAnalyzing requirements...\n\nWhich tech stack should I use?\n(Examples: HTML/CSS/JS, React, Node.js, Django, etc.)\n\nUsage: /build <project description>");
     const state = getState(ctx.from!.id);
     state.pendingBuildDescription = prompt;
-    return ctx.reply("Pick the tech stack for this project.\nExamples:\n• Node.js + Express\n• React + Vite + TypeScript\n• Next.js + Tailwind\n\nReply with your preferred stack.");
+    return ctx.reply("🏗 Project Construction Started\nAnalyzing requirements...\n\nWhich tech stack should I use?\n(Examples: HTML/CSS/JS, React, Node.js, Django, etc.)");
   };
   bot.command("build", handleBuildCommand);
   bot.command("create", handleBuildCommand);
