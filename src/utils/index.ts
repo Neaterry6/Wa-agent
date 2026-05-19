@@ -60,6 +60,49 @@ export class FileUtils {
     return fs.readdirSync(dirPath);
   }
 
+
+
+  static listFilesRecursive(dirPath: string, baseDir: string = dirPath): string[] {
+    if (!fs.existsSync(dirPath)) return [];
+
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const results: string[] = [];
+
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, "/");
+      if (entry.isDirectory()) {
+        results.push(`${relativePath}/`);
+        results.push(...this.listFilesRecursive(fullPath, baseDir));
+      } else {
+        results.push(relativePath);
+      }
+    }
+
+    return results;
+  }
+
+  static formatPathListForMarkdown(items: string[], header: string, maxChars = 3500): string[] {
+    if (!items.length) return [`${header}\n\n\`\`\`\n(empty)\n\`\`\``];
+
+    const chunks: string[] = [];
+    let current = `${header}\n\n\`\`\`\n`;
+
+    for (const item of items) {
+      const line = `${item}\n`;
+      if ((current + line + "\`\`\`").length > maxChars) {
+        chunks.push(`${current}\`\`\``);
+        current = `${header} (cont.)\n\n\`\`\`\n${line}`;
+      } else {
+        current += line;
+      }
+    }
+
+    chunks.push(`${current}\`\`\``);
+    return chunks;
+  }
+
   static searchContent(dirPath: string, query: string): { path: string; line: number; content: string }[] {
     const results: { path: string; line: number; content: string }[] = [];
     const files = this.getAllFiles(dirPath);

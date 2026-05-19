@@ -104,8 +104,8 @@ async function startServer() {
       return ctx.reply("Send GitHub repo + token in one message.\nExample:\nrepo: owner/repo\ntoken: ghp_xxx");
     }
 
-    const history = DB.getHistory(userId);
-    DB.logChat(userId, "user", text);
+    const history = await DB.getHistory(userId, 50);
+    await DB.logChat(userId, "user", text);
 
     await ctx.sendChatAction("typing");
 
@@ -133,7 +133,7 @@ Mode: ${state.mode}. Current Directory: ${state.cwd}.
 Behavior rules: roast=savage and witty, helpful=friendly and clear, coder=technical and precise, strict=short and direct. Adjust tone to current mode. You have full access to tools like shell, github, and files.`;
         
         const response = await AIEngine.chat(text, history, systemPrompt, state.model);
-        DB.logChat(userId, "model", response);
+        await DB.logChat(userId, "model", response);
         return ctx.reply(response, { parse_mode: "Markdown" });
     }
   }
@@ -599,15 +599,21 @@ ${data.description || 'No description'}`);
       FileUtils.unzip(zipPath, workspaceDir);
       state.cwd = workspaceDir;
       
-      const contents = FileUtils.listFiles(workspaceDir);
-      ctx.reply(`🔓 *Extraction Complete*\n\nWorkspace set to: \`${path.basename(workspaceDir)}\`\nFiles: ${contents.length}\n\nUse /ls to see contents.`, { parse_mode: 'Markdown' });
+      const allPaths = FileUtils.listFilesRecursive(workspaceDir);
+      const summary = `🔓 *Extraction Complete*\n\nWorkspace set to: \`${path.basename(workspaceDir)}\`\nEntries: ${allPaths.length}\n\nSending full directory tree...`;
+      await ctx.reply(summary, { parse_mode: 'Markdown' });
+
+      const messages = FileUtils.formatPathListForMarkdown(allPaths, "📂 *Extracted ZIP Tree*");
+      for (const message of messages) {
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+      }
     } catch (e: any) {
       logger.error(`Unzip failed for ${userId}: ${e.message}`);
       ctx.reply(`❌ Error during extraction: ${e.message}`);
     }
   });
 
-  bot.command("lszip", (ctx) => {
+  bot.command("lszip", async (ctx) => {
     const userId = ctx.from!.id;
     const state = getState(userId);
     const reqName = ctx.message.text.split(" ")[1];
@@ -616,7 +622,10 @@ ${data.description || 'No description'}`);
     
     try {
       const list = FileUtils.listZipContent(zipPath);
-      ctx.reply(`📦 *ZIP Contents:*\n\n\`\`\`\n${list.slice(0, 50).join("\n")}${list.length > 50 ? '\n...' : ''}\n\`\`\``, { parse_mode: 'Markdown' });
+      const messages = FileUtils.formatPathListForMarkdown(list, "📦 *ZIP Contents*");
+      for (const message of messages) {
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+      }
     } catch (e: any) {
       ctx.reply(`❌ Could not list contents: ${e.message}`);
     }
