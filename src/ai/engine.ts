@@ -68,14 +68,24 @@ ${prompt}` : prompt;
   }
 
   static async generateProject(description: string) {
-    const system = `You are an elite full-stack developer. Generate a complete project based on the description.
+    const system = `You are an elite full-stack developer. Generate a complete, production-style project based on the description.
 Use the format:
 === filename.ext ===
 code content
 === nextfile.ext ===
 code content
 
-Provide package.json, main entry files, and readme. Be extremely thorough.`;
+Requirements:
+- Return MANY files when needed (not a tiny demo). Create deep folder structures for real apps.
+- Include package.json, lockfile-friendly scripts, main entry files, README, .env.example, and config files.
+- Add reusable modules/components and clear separation of concerns.
+- If the project is web/apk related and needs images, include an assets pipeline:
+  - A downloader utility that can fetch image URLs from Google Images or Pinterest result pages.
+  - A documented command/script for downloading and storing images under assets/.
+  - Fallback placeholders when external downloads fail.
+- Keep file headers exactly in the required === path === format so parsing works.
+
+Be extremely thorough.`;
 
     return this.withFallback(description, [], system, "gemini");
   }

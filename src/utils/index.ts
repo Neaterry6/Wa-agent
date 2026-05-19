@@ -2,10 +2,18 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import * as archiverModule from "archiver";
+import archiver from "archiver";
 import AdmZip from "adm-zip";
 
-const archiverFactory = ((archiverModule as any).default ?? (archiverModule as any).create ?? archiverModule) as (format: string, options?: any) => any;
+const resolveArchiverFactory = () => {
+  const mod: any = archiver;
+  if (typeof mod === "function") return mod;
+  if (typeof mod?.default === "function") return mod.default;
+  if (typeof mod?.create === "function") return mod.create;
+  throw new TypeError("archiverFactory is not a function");
+};
+
+const archiverFactory = resolveArchiverFactory() as (format: string, options?: any) => any;
 
 const execAsync = promisify(exec);
 
@@ -139,7 +147,7 @@ export class FileUtils {
 
   static parseProjectCode(raw: string) {
     const files: { name: string; content: string }[] = [];
-    const regex = /===\s*([\w\-\.\/]+)\s*===\s*([\s\S]*?)(?===\s*[\w\-\.\/]+\s*===|$)/g;
+    const regex = /===\s*([^\n=]+?)\s*===\s*([\s\S]*?)(?=\n===\s*[^\n=]+?\s*===|$)/g;
     let match;
     while ((match = regex.exec(raw)) !== null) {
       files.push({
