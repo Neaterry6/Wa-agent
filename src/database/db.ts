@@ -117,7 +117,7 @@ export const DB = {
       // Fall back to local sqlite history when firebase read fails.
     }
 
-    return db.prepare("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?").all(userId, Math.min(limit, FIREBASE_MAX_CHATS)).reverse() as any[];
+    return db.prepare("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?").all(userId, Math.min(limit, FIREBASE_MAX_CHATS)).reverse() as any[];
   },
   getAllUsers: () => db.prepare("SELECT * FROM users").all() as any[]
 };
