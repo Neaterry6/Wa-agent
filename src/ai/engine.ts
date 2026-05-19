@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import axios from "axios";
+import https from "https";
+import { randomUUID } from "crypto";
 import { config } from "../config/index.ts";
 
 export class AIEngine {
@@ -14,8 +16,8 @@ export class AIEngine {
   });
   private static groq = new Groq({ apiKey: config.groqKey });
 
-  private static async withFallback(prompt: string, systemInstruction: string = "", preferred: string = "gemini") {
-    const order = [preferred, "groq", "qwen", "gemini"].filter((v, i, a) => a.indexOf(v) === i);
+  private static async withFallback(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", preferred: string = "gemini") {
+    const order = [preferred, "groq", "qwen", "broken", "gemini"].filter((v, i, a) => a.indexOf(v) === i);
     const errors: string[] = [];
 
     for (const provider of order) {
@@ -23,6 +25,7 @@ export class AIEngine {
         if (provider === "gemini") return await this.generateGemini(prompt, systemInstruction);
         if (provider === "groq") return await this.generateGroq(this.mergePrompt(prompt, systemInstruction), config.groqModel);
         if (provider === "qwen") return await this.generateQwen(this.mergePrompt(prompt, systemInstruction));
+        if (provider === "broken") return await this.generateBroken(prompt, history, systemInstruction);
       } catch (e) {
         errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -40,7 +43,7 @@ ${prompt}` : prompt;
   }
 
   static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", model: string = "gemini") {
-    return this.withFallback(prompt, systemInstruction, model);
+    return this.withFallback(prompt, history, systemInstruction, model);
   }
 
   static async generateProject(description: string) {
@@ -53,7 +56,7 @@ code content
 
 Provide package.json, main entry files, and readme. Be extremely thorough.`;
 
-    return this.withFallback(description, system, "gemini");
+    return this.withFallback(description, [], system, "gemini");
   }
 
   static async detectIntent(text: string) {
@@ -65,7 +68,7 @@ Examples:
 {"intent": "CMD_SHELL", "command": "ls -la"}
 {"intent": "MEDIA_DOWNLOAD", "url": "https://google.com"}
 `;
-    const response = await this.withFallback(text, system, "gemini");
+    const response = await this.withFallback(text, [], system, "gemini");
     try {
       return JSON.parse(response);
     } catch {
@@ -103,5 +106,65 @@ Examples:
       headers: { "Authorization": `Bearer ${config.qwenKey}` }
     });
     return response.data.choices[0].message.content;
+  }
+
+  static async generateBroken(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "") {
+    const messages = [
+      ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+      ...history,
+      { role: "user", content: prompt }
+    ];
+
+    const payload = JSON.stringify({
+      type: "chat",
+      messagesHistory: messages.map((msg) => ({
+        id: randomUUID(),
+        from: msg.role === "assistant" || msg.role === "model" ? "bot" : "you",
+        content: msg.content,
+      })),
+      settings: {
+        model: config.brokenModel,
+        temperature: config.brokenTemperature,
+      },
+    });
+
+    const options = {
+      hostname: config.brokenHost,
+      path: config.brokenPath,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        Accept: "text/event-stream",
+        Referer: `https://${config.brokenHost}/pt/`,
+        Origin: `https://${config.brokenHost}`,
+        "User-Agent": "Mozilla/5.0",
+      },
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let text = "";
+        let buffer = "";
+
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          buffer += chunk;
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            text += line.replace(/^data:\s?/, "");
+          }
+        });
+
+        res.on("end", () => resolve(text.trim()));
+      });
+
+      req.on("error", reject);
+      req.write(payload);
+      req.end();
+    });
   }
 }
