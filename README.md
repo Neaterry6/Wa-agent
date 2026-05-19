@@ -4,7 +4,7 @@ The ultimate, "dirty" coding and automation agent bot for Telegram.
 
 ## Features
 - **Project Scaffold Generator**: Generate entire directory structures with a single prompt.
-- **Multi-Model Routing**: Switch between Qwen Coder, Gemini Pro, and Groq Llama 3 via `/model`.
+- **Multi-Model Routing**: Switch between Qwen Coder, Gemini Pro, and Grog (Groq Llama 3.3 70B) via `/model`.
 - **Force Join Membership**: Secure your community by requiring users to join your channel.
 - **Interactive Terminal**: Run real shell commands directly from Telegram (Admin only).
 - **GitHub Sync**: Clone, push, and manage repos from chat.

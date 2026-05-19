@@ -21,6 +21,8 @@ export const config = {
   groqModel: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
   groqBaseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
   qwenKey: process.env.QWEN_API_KEY || "",
+  qwenModel: process.env.QWEN_MODEL || "qwen-plus",
+  qwenBaseUrl: process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   brokenHost: process.env.BROKEN_HOST || "gemini.talkai.info",
   brokenPath: process.env.BROKEN_PATH || "/pt/chat/send/",
   brokenModel: process.env.BROKEN_MODEL || "gemini-2.0-flash-lite",
