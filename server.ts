@@ -23,6 +23,17 @@ function escapeHtml(text: string) {
     .replace(/>/g, "&gt;");
 }
 
+
+function normalizeModelReply(text: string) {
+  return text
+    .replace(/\\n/g, "\n")
+    .replace(/\*\*/g, "")
+    .replace(/^[ \t]*>[ \t]?/gm, "")
+    .replace(/^[ \t]*[-*][ \t]+/gm, "• ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 function splitMessage(text: string, maxLength = 4096): string[] {
   const chunks: string[] = [];
   let remaining = text;
@@ -102,6 +113,66 @@ async function startServer() {
     await ctx.reply(asHtml ? `<pre>${escapeHtml(text)}</pre>` : text, asHtml ? { parse_mode: "HTML" } : undefined);
   }
 
+  function getMenuText() {
+    return `📋 BrokenVzn Agent Menu
+
+Use / prefix for slash commands.
+You can also send plain text like: git clone <url>, unzip my.zip, or model groq.
+
+Core Commands
+• /help
+• /menu
+• /model <gemini|groq|qwen|broken>
+• /setmode <roast|helpful|coder|strict>
+
+Project & GitHub
+• /build <prompt>
+• /gitclone <repo_url>
+• /gitzip <repo_url|owner/repo>
+• /push <repo_name> (needs /github login <token> first)
+
+Files & Utilities
+• /unzip <zip_name>
+• /lszip <zip_name>
+• /zipfiles
+• /terminal (admin)`;
+  }
+
+  function getHelpText(ctx: Context) {
+    return `Brokenvzn tools:
+
+Bot Menu
+User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
+
+You can use commands with "/" OR without prefix.
+Example: "help", "menu", "model groq", "unzip my.zip"
+
+AI + Chat
+• /help or /menu
+• /model qwen|gemini|grog|groq
+• /setmode roast|helpful|coder|strict
+• /create <prompt>
+• normal chat: just send any message
+
+Dev Tools
+• /gitclone <repo_url>
+• /gitlookup <repo_url|owner/repo>
+• /gitzip <repo_url|owner/repo>
+• /gitpr <repo_url|owner/repo> <title> | <body>
+• /setgithub <token> <repo_url>
+• /listfiles
+• /readfile <path>
+• /editfile <path> <instructions>
+• /run <lang> <code>
+• /scrape <url>
+• /unzip <zip_path>
+
+Admin
+• /shell <command>
+• /broadcast <message>
+• /ban <user_id> / /unban <user_id>`;
+  }
+
   async function handleNaturalChat(ctx: Context, text: string) {
     const userId = ctx.from!.id;
     const state = getState(userId);
@@ -179,8 +250,9 @@ Mode: ${state.mode}. Current Directory: ${state.cwd}.
 Behavior rules: roast=savage and witty, helpful=friendly and clear, coder=technical and precise, strict=short and direct. Adjust tone to current mode. You have full access to tools like shell, github, and files.`;
         
         const response = await AIEngine.chat(text, history, systemPrompt, state.model);
-        await DB.logChat(userId, "model", response);
-        return sendLongTextResponse(ctx, response, true);
+        const cleanedResponse = normalizeModelReply(response);
+        await DB.logChat(userId, "model", cleanedResponse);
+        return sendLongTextResponse(ctx, cleanedResponse, false);
     }
   }
 
@@ -407,6 +479,15 @@ Created structure, generated code for ${files.length} files, and delivered the z
   bot.on("text", async (ctx) => {
     await notifyAdminsUserActivity(ctx, "text_message");
     const t = ctx.message.text.trim();
+    const lower = t.toLowerCase();
+
+    if (lower === "help" || lower === "/help") {
+      return ctx.reply(getHelpText(ctx));
+    }
+    if (lower === "menu" || lower === "/menu") {
+      return ctx.reply(getMenuText());
+    }
+
     const gitCloneMatch = t.match(/^git\s*clone\s+(https?:\/\/github\.com\/\S+)$/i) || t.match(/^gitclone\s+(https?:\/\/github\.com\/\S+)$/i);
     if (gitCloneMatch) {
       return executeShell(ctx, `git clone ${gitCloneMatch[1]}`);
@@ -440,30 +521,7 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.command("menu", (ctx) => {
-    const menuText = `📋 *BrokenVzn Agent Menu*
-
-Use \`/\` prefix for slash commands.
-For quick natural input, you can also send plain text like: \`git clone <url>\`, \`unzip my.zip\`, or \`model groq\`.
-
-*Core Commands*
-• /help
-• /model <gemini|groq|qwen|broken>
-• /setmode <roast|helpful|coder|strict>
-
-*Project & GitHub*
-• /build <prompt>
-• /gitclone <repo_url>
-• /gitzip <repo_url|owner/repo>
-• /push <repo_name> *(needs /github login <token> first)*
-
-*Files & Utilities*
-• /unzip <zip_name>
-• /lszip <zip_name>
-• /zipfiles
-• /terminal *(admin)*`;
-
-    ctx.reply(menuText, {
-      parse_mode: "Markdown",
+    ctx.reply(getMenuText(), {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🤖 AI Chat", "ai_chat"), Markup.button.callback("💻 Code Builder", "code_builder")],
         [Markup.button.callback("🌐 Preview Builder", "preview_builder"), Markup.button.callback("🐙 GitHub Tools", "github_tools")],
@@ -485,42 +543,7 @@ For quick natural input, you can also send plain text like: \`git clone <url>\`,
   });
 
   bot.help((ctx) => {
-    const helpText = `> *Brokenvzn tools:*
-🖼 🤖 *Bot Menu*
-👤 User: ${ctx.from?.first_name || 'Broken'} | 🆔 ${ctx.from?.id}
-
-You can use commands with "/" OR without prefix.
-Example: "help", "menu", "model groq", "unzip my.zip"
-
-🧠 *AI + Chat*
-• help / menu
-• model qwen|gemini|grog|groq
-• setmode roast|helpful|coder|strict
-• create <prompt>
-• normal chat: just send any message (persistent memory)
-
-🧰 *Dev Tools*
-• gitclone <repo_url>
-• gitlookup <repo_url|owner/repo>
-• gitzip <repo_url|owner/repo>
-• gitpr <repo_url|owner/repo> <title> | <body>
-• setgithub <token> <repo_url>
-• listfiles
-• readfile <path>
-• editfile <path> <instructions>
-• run <lang> <code>
-• scrape <url>
-• unzip <zip_path>
-
-🛡️ *Admin*
-• shell <command> (admin only)
-• broadcast <message> (admin only)
-• ban <user_id> / unban <user_id> (admin only)`;
-
-    return ctx.replyWithPhoto("https://cdn.tmp.malvryx.dev/files/mxv_Q6Q-K0tyj.jpeg", {
-      caption: helpText,
-      parse_mode: 'Markdown'
-    });
+    return ctx.reply(getHelpText(ctx));
   });
 
   bot.command("setmode", (ctx) => {
