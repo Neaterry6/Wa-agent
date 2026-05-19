@@ -29,13 +29,31 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
+  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'gemini', cwd: process.cwd(), isTerminal: false, zips: {} });
+      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, zips: {} });
     }
     return userStates.get(userId)!;
+  }
+
+  async function notifyAdminsUserActivity(ctx: Context, source: string) {
+    if (!ctx.from || isAdmin(ctx)) return;
+    const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ").trim() || "Unknown";
+    const username = ctx.from.username ? `@${ctx.from.username}` : "No username";
+    const chatType = ctx.chat?.type || "unknown";
+    const text = `🔔 User activity
+👤 ${name} (${username})
+🆔 ${ctx.from.id}
+💬 Chat: ${chatType}
+📍 Trigger: ${source}`;
+
+    await Promise.all(config.adminIds.map(async (adminId) => {
+      try {
+        await bot.telegram.sendMessage(adminId, text);
+      } catch {}
+    }));
   }
 
   async function handleNaturalChat(ctx: Context, text: string) {
@@ -111,8 +129,8 @@ async function startServer() {
       case "CHAT":
       default:
         const systemPrompt = `You are BrokenVzn Agent. A powerful AI assistant for coding and automation. 
-Mode: ${state.model}. Current Directory: ${state.cwd}. 
-Be concise, helpful, and slightly savage when appropriate. You have full access to tools like shell, github, and files.`;
+Mode: ${state.mode}. Current Directory: ${state.cwd}. 
+Behavior rules: roast=savage and witty, helpful=friendly and clear, coder=technical and precise, strict=short and direct. Adjust tone to current mode. You have full access to tools like shell, github, and files.`;
         
         const response = await AIEngine.chat(text, history, systemPrompt, state.model);
         DB.logChat(userId, "model", response);
@@ -341,6 +359,7 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.on("text", async (ctx) => {
+    await notifyAdminsUserActivity(ctx, "text_message");
     const t = ctx.message.text.trim();
     const gitCloneMatch = t.match(/^git\s*clone\s+(https?:\/\/github\.com\/\S+)$/i) || t.match(/^gitclone\s+(https?:\/\/github\.com\/\S+)$/i);
     if (gitCloneMatch) {
@@ -388,34 +407,62 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.help((ctx) => {
-    const uptime = `${Math.floor(process.uptime() / 60)}m ${Math.floor(process.uptime() % 60)}s`;
-    const helpText = `╭───〔 🤖 ILOM PAIR BOT 〕───╮
-👤 User: ${ctx.from?.first_name || 'User'}  |  🆔 ${ctx.from?.id}
-⏱️ Uptime: ${uptime}
+    const helpText = `> *Brokenvzn tools:*
+🖼 🤖 *Bot Menu*
+👤 User: ${ctx.from?.first_name || 'Broken'} | 🆔 ${ctx.from?.id}
 
-📱 Terminal & ZIP
-• /terminal  • /shell <command>  • /exit
-• /ls  • /search <text>
-• /unzip <saved-name.zip>  • /lszip <saved-name.zip>
-• /zipfiles
+You can use commands with "/" OR without prefix.
+Example: "help", "menu", "model groq", "unzip my.zip"
 
-🧠 AI Utilities
-• /qwen <prompt>
-• no prefix chat also works
+🧠 *AI + Chat*
+• help / menu
+• model qwen|gemini|grog|groq
+• setmode roast|helpful|coder|strict
+• create <prompt>
+• normal chat: just send any message (persistent memory)
 
-🐙 Git Utilities
-• /gitclone <repo-url>
-• /gitlookup <owner/repo>
-• /gitzip <repo-url>
+🧰 *Dev Tools*
+• gitclone <repo_url>
+• gitlookup <repo_url|owner/repo>
+• gitzip <repo_url|owner/repo>
+• gitpr <repo_url|owner/repo> <title> | <body>
+• setgithub <token> <repo_url>
+• listfiles
+• readfile <path>
+• editfile <path> <instructions>
+• run <lang> <code>
+• scrape <url>
+• unzip <zip_path>
 
-⚙️ Controls
-• /menu  • /help  • /ping
+🛡️ *Admin*
+• shell <command> (admin only)
+• broadcast <message> (admin only)
+• ban <user_id> / unban <user_id> (admin only)`;
 
-🛡️ Admin
-• /adminusers  • /adminstats  • /broadcast
-╰──────────────────────────────╯`;
-    ctx.replyWithPhoto("https://cdn.tmp.malvryx.dev/files/mxv_Utp8xTViv.jpeg", { caption: helpText, parse_mode: 'Markdown' });
+    return ctx.replyWithPhoto("https://cdn.tmp.malvryx.dev/files/mxv_Q6Q-K0tyj.jpeg", {
+      caption: helpText,
+      parse_mode: 'Markdown'
+    });
   });
+
+  bot.command("setmode", (ctx) => {
+    const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
+    const modes: Record<string, string> = {
+      roast: "roast",
+      helpful: "helpful",
+      helpfull: "helpful",
+      coder: "coder",
+      strict: "strict"
+    };
+    const selected = modes[rawArg];
+    if (!selected) {
+      return ctx.reply("Usage: /setmode roast | helpful | coder | strict");
+    }
+    const state = getState(ctx.from!.id);
+    state.mode = selected;
+    return ctx.reply(`✅ Bot mode switched to *${selected.toUpperCase()}*`, { parse_mode: 'Markdown' });
+  });
+
 
   bot.command("qwen", async (ctx) => {
       const prompt = ctx.message.text.split(" ").slice(1).join(" ");
@@ -650,16 +697,18 @@ ${data.description || 'No description'}`);
 
   bot.command("ban", (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
-    const target = ctx.message.text.split(" ")[1];
-    if (!target) return ctx.reply("Usage: /ban <user_id>");
-    ctx.reply(`🚫 User ${target} has been restricted from the agent.`);
+    const target = Number(ctx.message.text.split(" ")[1]);
+    if (!target || Number.isNaN(target)) return ctx.reply("Usage: /ban <user_id>");
+    DB.banUser(target, true);
+    return ctx.reply(`🚫 User ${target} has been banned from using the bot.`);
   });
 
   bot.command("unban", (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
-    const target = ctx.message.text.split(" ")[1];
-    if (!target) return ctx.reply("Usage: /unban <user_id>");
-    ctx.reply(`✅ Restrictions removed for user ${target}.`);
+    const target = Number(ctx.message.text.split(" ")[1]);
+    if (!target || Number.isNaN(target)) return ctx.reply("Usage: /unban <user_id>");
+    DB.banUser(target, false);
+    return ctx.reply(`✅ Restrictions removed for user ${target}.`);
   });
 
   // Health check API
