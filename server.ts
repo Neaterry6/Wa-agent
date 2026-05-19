@@ -485,6 +485,24 @@ Created structure, generated code for ${files.length} files, and delivered the z
     // Redundant but safe
   });
 
+
+
+function extractReplyContext(msg: any): string {
+  const r = msg?.reply_to_message;
+  if (!r) return '';
+  const chunks: string[] = [];
+  if (r.text) chunks.push(`Replied text: ${r.text}`);
+  if (r.caption) chunks.push(`Replied caption: ${r.caption}`);
+  if (r.photo?.length) chunks.push('Replied media: photo');
+  if (r.video) chunks.push('Replied media: video');
+  if (r.document) chunks.push(`Replied document: ${r.document.file_name || 'file'}`);
+  if (r.voice) chunks.push('Replied media: voice note');
+  return chunks.length ? `
+
+[Reply context]
+${chunks.join(' | ')}` : '';
+}
+
   bot.on("text", async (ctx) => {
     await notifyAdminsUserActivity(ctx, "text_message");
     const t = ctx.message.text.trim();
@@ -505,6 +523,22 @@ Created structure, generated code for ${files.length} files, and delivered the z
       await ctx.reply("Detected GitHub URL. Use /gitclone <url> or /gitzip <url>, or send: git clone <url>.");
       return;
     }
+
+    const replied = (ctx as any).message?.reply_to_message;
+    const wantsVision = /analy[sz]e|read|describe|what is in|what's in|ocr/i.test(lower);
+    if (replied?.photo?.length && wantsVision) {
+      try {
+        const file = replied.photo[replied.photo.length - 1];
+        const link = await bot.telegram.getFileLink(file.file_id);
+        const response = await axios.get(link.href, { responseType: "arraybuffer" });
+        const base64 = Buffer.from(response.data).toString("base64");
+        const analysis = await AIEngine.analyzeImage(base64, "image/jpeg", `User prompt: ${t}`);
+        await ctx.reply(analysis);
+      } catch (e: any) {
+        await ctx.reply(`❌ Could not analyze replied image: ${e.message}`);
+      }
+      return;
+    }
     if (t.startsWith("/")) return;
 
     const prefixless = t.match(/^(help|menu|build|create|unzip|lszip|zipfiles|model|setmode|play|video|ssweb|musicgen|suno|transcribe|tts|buttonmode|voicemode)\b/i);
@@ -517,7 +551,8 @@ Created structure, generated code for ${files.length} files, and delivered the z
       await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: asSlash } });
       return;
     }
-    await handleNaturalChat(ctx, t);
+    const withReplyContext = t + extractReplyContext((ctx as any).message);
+    await handleNaturalChat(ctx, withReplyContext);
   });
 
   bot.on("voice", async (ctx) => {
@@ -611,6 +646,18 @@ Created structure, generated code for ${files.length} files, and delivered the z
       ctx.reply("📖 Consulting Qwen Knowledge...");
       const res = await AIEngine.generateQwen(prompt);
       ctx.reply(res);
+  });
+
+
+
+  bot.command("ssweb", async (ctx) => {
+    const raw = (ctx.message.text.split(" ")[1] || "").trim();
+    if (!raw) return ctx.reply("Usage: /ssweb <url>");
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const apiUrl = `https://api.screenshotone.com/take?access_key=KN3bMn5VoWZIWw&url=${encodeURIComponent(url)}&format=jpg&full_page=true&block_ads=true&block_cookie_banners=true&block_trackers=true&image_quality=80&response_type=by_format`;
+    const res = await axios.get(apiUrl, { responseType: 'arraybuffer', timeout: 60000 });
+    return ctx.replyWithPhoto({ source: Buffer.from(res.data) }, { caption: `🖼️ Full-page screenshot of:
+${url}` });
   });
 
   bot.command("ping", (ctx) => {
