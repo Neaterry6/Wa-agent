@@ -61,6 +61,12 @@ async function startServer() {
       return cloneRepoToWorkspace(ctx, repoUrl);
     }
 
+    const repoUrls = normalizedText.match(/https?:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?/gi) || [];
+    if (repoUrls.length >= 2 && /clone|merge|combine|one file|single file/i.test(normalizedText)) {
+      if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
+      return cloneAndMergeRepos(ctx, repoUrls.slice(0, 3));
+    }
+
     if (state.pendingGithubPush) {
       const parsedRepo = normalizedText.match(/(?:repo|repository|url)\s*[:=]?\s*(https?:\/\/github\.com\/[^\s]+|[\w.-]+\/[\w.-]+)/i);
       const parsedToken = normalizedText.match(/(?:token|github token)\s*[:=]?\s*(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/i);
@@ -193,13 +199,17 @@ Be concise, helpful, and slightly savage when appropriate. You have full access 
 Analyzing requirements...`, { parse_mode: 'Markdown' });
 
     try {
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
+1/4 Creating file structure blueprint...`, { parse_mode: 'Markdown' });
       const rawCode = await AIEngine.generateProject(description);
       const files = FileUtils.parseProjectCode(rawCode);
-      
+
       if (files.length === 0) {
-        return ctx.reply("❌ Failed to generate structured code. Try a clearer description.");
+        return ctx.reply("❌ Failed to generate structured code. Ask for a project with explicit files like `=== index.js ===`.");
       }
 
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
+2/4 Creating directories and files...`, { parse_mode: 'Markdown' });
       const buildDir = path.join(process.cwd(), "builds", `prj_${Date.now()}`);
       fs.mkdirSync(buildDir, { recursive: true });
 
@@ -207,15 +217,19 @@ Analyzing requirements...`, { parse_mode: 'Markdown' });
         FileUtils.writeFile(path.join(buildDir, file.name), file.content);
       }
 
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
+3/4 Packaging source as zip...`, { parse_mode: 'Markdown' });
       const zipPath = `${buildDir}.zip`;
       await FileUtils.zipFolder(buildDir, zipPath);
-      
+
+      await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
+4/4 Uploading zip to Telegram...`, { parse_mode: 'Markdown' });
       await ctx.replyWithDocument({ source: zipPath, filename: "project_source.zip" });
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `✅ *Build Complete*
-Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
-      
+Created structure, generated code for ${files.length} files, and delivered the zip file.`, { parse_mode: 'Markdown' });
+
     } catch (e: any) {
-      ctx.reply(`❌ *Build Error:* ${e.message}`);
+      ctx.reply(`❌ *Build Error:* ${e.message}`, { parse_mode: 'Markdown' });
     }
   }
 
@@ -235,6 +249,41 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
     state.cwd = target;
     state.clonedRepo = repoUrl;
     return ctx.reply(`✅ Cloned ${name} and switched workspace.`);
+  }
+
+
+  async function cloneAndMergeRepos(ctx: Context, repoUrls: string[]) {
+    const userId = ctx.from!.id;
+    const state = getState(userId);
+    const mergeRoot = path.join(process.cwd(), "workspaces", `merge_${userId}_${Date.now()}`);
+    fs.mkdirSync(mergeRoot, { recursive: true });
+    await ctx.reply(`🧩 Starting multi-repo flow for ${repoUrls.length} repositories...`, { parse_mode: 'Markdown' });
+
+    const combinedChunks: string[] = [];
+    for (const repoUrl of repoUrls) {
+      const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const target = path.join(mergeRoot, name);
+      await ctx.reply(`📥 Cloning: ${repoUrl}`);
+      const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
+      if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed for ${repoUrl}\n${out}`);
+
+      const repoFiles = FileUtils.listFiles(target);
+      for (const top of repoFiles) {
+        const full = path.join(target, top);
+        if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+          const content = FileUtils.readFile(full);
+          if (content) combinedChunks.push(`// === ${name}/${top} ===\n${content}`);
+        }
+      }
+    }
+
+    const outFile = path.join(mergeRoot, "combined_repos.txt");
+    FileUtils.writeFile(outFile, combinedChunks.join("\n\n"));
+    const zipPath = `${mergeRoot}.zip`;
+    await FileUtils.zipFolder(mergeRoot, zipPath);
+    state.cwd = mergeRoot;
+    await ctx.replyWithDocument({ source: zipPath, filename: "merged_repos.zip" });
+    return ctx.reply("✅ Finished: cloned repos, merged files into one combined file, and sent zip. You can now ask me to edit/convert them to endpoints.");
   }
 
   async function pushWorkspaceToGithub(ctx: Context, repoInput: string, githubToken: string) {

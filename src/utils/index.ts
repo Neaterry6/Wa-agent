@@ -2,11 +2,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import { createRequire } from "module";
+import archiver from "archiver";
 import AdmZip from "adm-zip";
-
-const require = createRequire(import.meta.url);
-const archiver = require("archiver");
 
 
 const execAsync = promisify(exec);
