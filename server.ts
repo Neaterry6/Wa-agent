@@ -18,6 +18,7 @@ import { Sandbox } from "./src/tools/sandbox.ts";
 async function startServer() {
   const app = express();
   const PORT = config.port;
+  app.use(express.json({ limit: "15mb" }));
 
   let botStatus = "initializing";
   let botError: string | null = null;
@@ -379,8 +380,18 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.on("photo", async (ctx) => {
-     ctx.reply("👁 *Vision Analysis Active*\nChecking image for code, UI, or secrets...");
-     // Real implementation would pass image to Gemini Vision
+     await ctx.reply("👁 *Vision Analysis Active*\nAnalyzing image content...", { parse_mode: "Markdown" });
+     try {
+      const photos = ctx.message.photo;
+      const file = photos[photos.length - 1];
+      const link = await bot.telegram.getFileLink(file.file_id);
+      const response = await axios.get(link.href, { responseType: "arraybuffer" });
+      const base64 = Buffer.from(response.data).toString("base64");
+      const analysis = await AIEngine.analyzeImage(base64, "image/jpeg", "Analyze this Telegram image and explain what you see, including useful technical details if present.");
+      await ctx.reply(analysis);
+     } catch (e: any) {
+      await ctx.reply(`❌ Image analysis failed: ${e.message}`);
+     }
   });
 
   bot.command("menu", (ctx) => {
@@ -730,6 +741,27 @@ ${data.description || 'No description'}`);
       botInfo,
       adminIds: config.adminIds 
     });
+  });
+
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const { prompt, history = [], imageBase64, imageMimeType = "image/png" } = req.body || {};
+      if (!prompt && !imageBase64) return res.status(400).json({ error: "prompt or imageBase64 is required" });
+
+      if (imageBase64) {
+        const reply = await AIEngine.analyzeImage(
+          imageBase64,
+          imageMimeType,
+          prompt || "Analyze this uploaded image and answer the user clearly."
+        );
+        return res.json({ reply });
+      }
+
+      const reply = await AIEngine.chat(prompt, history, "You are a web assistant in a ChatGPT-like interface. Be clear and concise.");
+      return res.json({ reply });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message || "Failed to generate response" });
+    }
   });
 
   // Start Bot

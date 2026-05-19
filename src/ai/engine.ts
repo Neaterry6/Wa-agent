@@ -88,6 +88,32 @@ Examples:
     return response.text;
   }
 
+  static async analyzeImage(base64Data: string, mimeType: string, prompt: string = "Analyze this image in detail.") {
+    if (!config.geminiKey) {
+      return this.withFallback(`User shared an image but vision model is unavailable. Respond helpfully and ask for description. User prompt: ${prompt}`);
+    }
+
+    const response = await this.ai.models.generateContent({
+      model: config.geminiModel,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType,
+                data: base64Data,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    return response.text || "I analyzed the image but couldn't produce a detailed response.";
+  }
+
   static async generateGroq(prompt: string, model: string = config.groqModel) {
     if (!config.groqKey) throw new Error("GROQ_API_KEY missing");
     const chatCompletion = await this.groq.chat.completions.create({

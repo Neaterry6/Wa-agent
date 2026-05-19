@@ -1,109 +1,109 @@
-import { useEffect, useMemo, useState } from "react";
-import { Bot, Terminal, Github, Shield, Cpu } from "lucide-react";
-import { motion } from "motion/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ImagePlus, Paperclip, Send, Bot, User } from "lucide-react";
 
-const DEFAULT_SANDBOX_URL = "https://codesandbox.io/";
+type Msg = { role: "user" | "assistant"; content: string; meta?: string };
 
 export default function App() {
   const [status, setStatus] = useState<any>(null);
-  const [sandboxUrl, setSandboxUrl] = useState(DEFAULT_SANDBOX_URL);
-  const [activeWorkspace, setActiveWorkspace] = useState<"dashboard" | "sandbox" | "terminal">("dashboard");
-
-  const terminalHint = useMemo(
-    () =>
-      [
-        "$ /terminal",
-        "[ADMIN] Interactive shell opened in Telegram.",
-        "$ /shell npm run dev",
-        "[RUN] Local preview booting...",
-      ].join("\n"),
-    [],
-  );
+  const [messages, setMessages] = useState<Msg[]>([{ role: "assistant", content: "Hi! Upload an image/zip or ask me anything." }]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [uploadInfo, setUploadInfo] = useState<string>("");
+  const [imagePayload, setImagePayload] = useState<{ base64: string; mimeType: string } | null>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/health")
-      .then((res) => res.json())
-      .then((data) => setStatus(data))
-      .catch((err) => console.error("Failed to fetch status:", err));
+    fetch("/api/health").then((r) => r.json()).then(setStatus).catch(() => null);
   }, []);
 
-  const normalizedUrl = (value: string) => {
-    if (!value.trim()) return DEFAULT_SANDBOX_URL;
-    if (value.startsWith("http://") || value.startsWith("https://")) return value;
-    return `https://${value}`;
+  useEffect(() => {
+    scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, busy]);
+
+  const canSend = useMemo(() => !!input.trim() || !!imagePayload, [input, imagePayload]);
+
+  const readFile = async (file: File) => {
+    const buffer = await file.arrayBuffer();
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+    return base64;
+  };
+
+  const onFile = async (file?: File) => {
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    if (file.type.startsWith("image/")) {
+      const base64 = await readFile(file);
+      setImagePayload({ base64, mimeType: file.type || "image/png" });
+      setUploadInfo(`Image ready: ${file.name}`);
+      return;
+    }
+
+    if (lower.endsWith(".zip")) {
+      setUploadInfo(`ZIP attached: ${file.name} (analysis context only)`);
+      return;
+    }
+
+    setUploadInfo(`File attached: ${file.name}`);
+  };
+
+  const send = async () => {
+    if (!canSend || busy) return;
+    const userText = input.trim() || (imagePayload ? "Please analyze this image." : "Analyze file.");
+    setMessages((p) => [...p, { role: "user", content: userText, meta: uploadInfo || undefined }]);
+    setInput("");
+    setBusy(true);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: userText,
+          history: messages,
+          imageBase64: imagePayload?.base64,
+          imageMimeType: imagePayload?.mimeType,
+        }),
+      });
+      const data = await res.json();
+      setMessages((p) => [...p, { role: "assistant", content: data.reply || data.error || "No response." }]);
+    } catch (e: any) {
+      setMessages((p) => [...p, { role: "assistant", content: `Error: ${e.message}` }]);
+    } finally {
+      setBusy(false);
+      setUploadInfo("");
+      setImagePayload(null);
+    }
   };
 
   return (
-    <div className="h-screen w-full flex flex-col bg-[#0A0A0F] text-[#E0E0E0] font-sans overflow-hidden">
-      <nav className="h-16 border-b border-white/10 flex items-center justify-between px-8 bg-[#0D0D14]">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center font-mono text-white font-bold">B</div>
-          <h1 className="text-xl font-bold tracking-tight text-white uppercase">BROKENVZN <span className="text-indigo-400">AGENT</span></h1>
-          <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900 border border-zinc-800 rounded-full">
-            <div className={`w-2 h-2 rounded-full ${status?.botActive ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : status?.botStatus === 'failed' ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' : 'bg-zinc-600'}`} />
-            <span className="text-[10px] font-mono uppercase tracking-widest text-slate-300">
-              {status?.botStatus === 'live' ? 'Connected' : status?.botStatus === 'failed' ? 'Auth Error' : 'Offline'}
-            </span>
-          </div>
-        </div>
-        <div className="hidden md:flex gap-6 items-center font-mono text-xs text-slate-400 uppercase">
-          <div className="flex gap-2"><span className="text-indigo-400">STATUS:</span> {status?.botStatus?.toUpperCase() || 'UNKNOWN'}</div>
-          <div className="px-3 py-1 bg-white/5 rounded border border-white/10 italic text-[10px]">v2.6.0-workspace</div>
-        </div>
-      </nav>
+    <div className="h-screen bg-[#0b0f19] text-white flex flex-col">
+      <header className="h-14 border-b border-white/10 px-5 flex items-center justify-between">
+        <div className="font-semibold">Chat Assistant</div>
+        <div className="text-xs text-slate-300">{status?.botStatus || "offline"}</div>
+      </header>
 
-      <div className="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
-        <aside className="col-span-3 border-r border-white/5 bg-[#08080C] p-6 hidden lg:block overflow-y-auto">
-          <h2 className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-4">Workspaces</h2>
-          <div className="space-y-3 mb-8">
-            <button onClick={() => setActiveWorkspace("dashboard")} className={`w-full text-left p-3 rounded border ${activeWorkspace === "dashboard" ? "border-indigo-500/40 bg-indigo-500/10" : "border-white/10 bg-white/5"}`}>
-              <div className="flex justify-between items-center mb-1"><span className="text-sm font-semibold">Control Dashboard</span><Cpu className="w-4 h-4 text-indigo-400" /></div>
-              <p className="text-[11px] text-slate-400">Health, model, and pipeline state</p>
-            </button>
-            <button onClick={() => setActiveWorkspace("sandbox")} className={`w-full text-left p-3 rounded border ${activeWorkspace === "sandbox" ? "border-emerald-500/40 bg-emerald-500/10" : "border-white/10 bg-white/5"}`}>
-              <div className="flex justify-between items-center mb-1"><span className="text-sm font-semibold">CodeSandbox</span><Github className="w-4 h-4 text-emerald-400" /></div>
-              <p className="text-[11px] text-slate-400">Embed any sandbox project or workspace URL</p>
-            </button>
-            <button onClick={() => setActiveWorkspace("terminal")} className={`w-full text-left p-3 rounded border ${activeWorkspace === "terminal" ? "border-amber-500/40 bg-amber-500/10" : "border-white/10 bg-white/5"}`}>
-              <div className="flex justify-between items-center mb-1"><span className="text-sm font-semibold">Inbuilt Terminal</span><Terminal className="w-4 h-4 text-amber-400" /></div>
-              <p className="text-[11px] text-slate-400">Admin command bridge + quick shell macros</p>
-            </button>
-          </div>
-        </aside>
-
-        <main className="col-span-12 lg:col-span-9 p-8 flex flex-col overflow-y-auto">
-          {activeWorkspace === "dashboard" && (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <motion.div whileHover={{ y: -4 }} className="p-5 rounded-xl bg-gradient-to-br from-indigo-900/20 to-transparent border border-indigo-500/20"><div className="text-indigo-400 mb-3"><Cpu className="w-6 h-6" /></div><h3 className="text-lg font-bold mb-1">Coding Core</h3></motion.div>
-                <motion.div whileHover={{ y: -4 }} className="p-5 rounded-xl bg-gradient-to-br from-emerald-900/20 to-transparent border border-emerald-500/20"><div className="text-emerald-400 mb-3"><Github className="w-6 h-6" /></div><h3 className="text-lg font-bold mb-1">Git Automation</h3></motion.div>
-                <motion.div whileHover={{ y: -4 }} className="p-5 rounded-xl bg-gradient-to-br from-amber-900/20 to-transparent border border-amber-500/20"><div className="text-amber-400 mb-3"><Shield className="w-6 h-6" /></div><h3 className="text-lg font-bold mb-1">Admin Safety</h3></motion.div>
-              </div>
-              <div className="rounded-xl border border-white/10 bg-[#0D0D14] p-6">
-                <p className="text-sm text-slate-300">Use the left panel to open the new <span className="text-emerald-400">CodeSandbox</span> workspace or jump into the <span className="text-amber-400">inbuilt terminal</span> panel.</p>
-              </div>
-            </>
-          )}
-
-          {activeWorkspace === "sandbox" && (
-            <div className="rounded-xl border border-emerald-500/20 bg-[#0D0D14] p-4 h-full flex flex-col gap-4">
-              <div className="flex flex-col md:flex-row gap-3 md:items-center">
-                <input value={sandboxUrl} onChange={(e) => setSandboxUrl(e.target.value)} className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Paste CodeSandbox URL" />
-                <button onClick={() => setSandboxUrl(normalizedUrl(sandboxUrl))} className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold">Load Sandbox</button>
-              </div>
-              <iframe title="CodeSandbox Embed" src={normalizedUrl(sandboxUrl)} className="w-full flex-1 min-h-[500px] rounded border border-white/10 bg-black" />
+      <main ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
+        {messages.map((m, i) => (
+          <div key={i} className={`max-w-3xl ${m.role === "user" ? "ml-auto" : "mr-auto"}`}>
+            <div className={`rounded-2xl px-4 py-3 border ${m.role === "user" ? "bg-indigo-600/30 border-indigo-400/30" : "bg-[#111827] border-white/10"}`}>
+              <div className="text-xs opacity-70 mb-1 flex items-center gap-2">{m.role === "user" ? <User size={14} /> : <Bot size={14} />} {m.role}</div>
+              <div className="whitespace-pre-wrap text-sm">{m.content}</div>
+              {m.meta && <div className="text-xs mt-2 text-emerald-300">{m.meta}</div>}
             </div>
-          )}
+          </div>
+        ))}
+        {busy && <div className="text-sm text-slate-400">Thinking...</div>}
+      </main>
 
-          {activeWorkspace === "terminal" && (
-            <div className="rounded-xl border border-amber-500/20 bg-[#0D0D14] p-4 h-full flex flex-col gap-4">
-              <div className="flex items-center gap-2 text-amber-300 font-mono text-xs uppercase"><Bot className="w-4 h-4" /> Inbuilt Terminal Bridge</div>
-              <textarea readOnly value={terminalHint} className="w-full flex-1 min-h-[360px] rounded bg-black/70 border border-white/10 p-4 font-mono text-sm text-emerald-300" />
-              <p className="text-xs text-slate-400">Live command execution remains controlled by the admin-only Telegram commands (<code>/terminal</code>, <code>/shell</code>).</p>
-            </div>
-          )}
-        </main>
-      </div>
+      <footer className="border-t border-white/10 p-4 space-y-2">
+        {uploadInfo && <div className="text-xs text-emerald-300">{uploadInfo}</div>}
+        <div className="flex gap-2 items-end">
+          <label className="p-2 rounded-lg border border-white/15 hover:bg-white/5 cursor-pointer"><ImagePlus size={18} /><input type="file" accept="image/*,.zip" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} /></label>
+          <label className="p-2 rounded-lg border border-white/15 hover:bg-white/5 cursor-pointer"><Paperclip size={18} /><input type="file" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} /></label>
+          <textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Message..." className="flex-1 min-h-[48px] max-h-36 rounded-xl bg-[#111827] border border-white/10 px-3 py-2 text-sm" />
+          <button onClick={send} disabled={!canSend || busy} className="px-4 py-3 rounded-xl bg-indigo-600 disabled:opacity-50"><Send size={18} /></button>
+        </div>
+      </footer>
     </div>
   );
 }
