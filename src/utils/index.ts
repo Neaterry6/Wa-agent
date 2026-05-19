@@ -2,9 +2,10 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import archiver from "archiver";
+import * as archiverModule from "archiver";
 import AdmZip from "adm-zip";
 
+const archiverFactory = ((archiverModule as any).default ?? (archiverModule as any).create ?? archiverModule) as (format: string, options?: any) => any;
 
 const execAsync = promisify(exec);
 
@@ -23,7 +24,7 @@ export class FileUtils {
   static async zipFolder(sourceDir: string, outPath: string) {
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outPath);
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const archive = archiverFactory("zip", { zlib: { level: 9 } });
 
       output.on("close", () => resolve(true));
       archive.on("error", reject);
