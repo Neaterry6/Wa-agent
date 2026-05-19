@@ -14,20 +14,33 @@ export class AIEngine {
   });
   private static groq = new Groq({ apiKey: config.groqKey });
 
-  static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", model: string = "gemini") {
-    if (model === "gemini") {
-        const chat = this.ai.chats.create({
-          model: config.geminiModel, 
-          config: { systemInstruction }
-        });
-        const result = await chat.sendMessage({ message: prompt });
-        return result.text;
-    } else if (model === "groq") {
-        return this.generateGroq(prompt, config.groqModel);
-    } else if (model === "qwen") {
-        return this.generateQwen(prompt);
+  private static async withFallback(prompt: string, systemInstruction: string = "", preferred: string = "gemini") {
+    const order = [preferred, "groq", "qwen", "gemini"].filter((v, i, a) => a.indexOf(v) === i);
+    const errors: string[] = [];
+
+    for (const provider of order) {
+      try {
+        if (provider === "gemini") return await this.generateGemini(prompt, systemInstruction);
+        if (provider === "groq") return await this.generateGroq(this.mergePrompt(prompt, systemInstruction), config.groqModel);
+        if (provider === "qwen") return await this.generateQwen(this.mergePrompt(prompt, systemInstruction));
+      } catch (e) {
+        errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
-    return this.generateGemini(prompt, systemInstruction);
+
+    throw new Error(`All model providers failed. ${errors.join(" | ")}`);
+  }
+
+  private static mergePrompt(prompt: string, systemInstruction: string) {
+    return systemInstruction ? `System Instructions:
+${systemInstruction}
+
+User Prompt:
+${prompt}` : prompt;
+  }
+
+  static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", model: string = "gemini") {
+    return this.withFallback(prompt, systemInstruction, model);
   }
 
   static async generateProject(description: string) {
@@ -39,8 +52,8 @@ code content
 code content
 
 Provide package.json, main entry files, and readme. Be extremely thorough.`;
-    
-    return this.generateGemini(description, system);
+
+    return this.withFallback(description, system, "gemini");
   }
 
   static async detectIntent(text: string) {
@@ -52,22 +65,22 @@ Examples:
 {"intent": "CMD_SHELL", "command": "ls -la"}
 {"intent": "MEDIA_DOWNLOAD", "url": "https://google.com"}
 `;
-    const response = await this.generateGemini(text, system);
+    const response = await this.withFallback(text, system, "gemini");
     try {
-        return JSON.parse(response);
+      return JSON.parse(response);
     } catch {
-        return { intent: "CHAT", query: text };
+      return { intent: "CHAT", query: text };
     }
   }
 
   static async generateGemini(prompt: string, systemInstruction?: string) {
     if (!config.geminiKey) throw new Error("GEMINI_API_KEY missing");
-    const response = await this.ai.models.generateContent({ 
-        model: config.geminiModel,
-        contents: prompt,
-        config: {
-            systemInstruction
-        }
+    const response = await this.ai.models.generateContent({
+      model: config.geminiModel,
+      contents: prompt,
+      config: {
+        systemInstruction
+      }
     });
     return response.text;
   }
@@ -82,17 +95,13 @@ Examples:
   }
 
   static async generateQwen(prompt: string) {
-    if (!config.qwenKey) return "QWEN_API_KEY is not configured.";
-    try {
-        const response = await axios.post("https://api.qwen.aikit.club/v1/chat/completions", {
-            model: "qwen-plus",
-            messages: [{ role: "user", content: prompt }]
-        }, {
-            headers: { "Authorization": `Bearer ${config.qwenKey}` }
-        });
-        return response.data.choices[0].message.content;
-    } catch (e) {
-        return "Qwen API Error: " + (e instanceof Error ? e.message : String(e));
-    }
+    if (!config.qwenKey) throw new Error("QWEN_API_KEY is not configured.");
+    const response = await axios.post("https://api.qwen.aikit.club/v1/chat/completions", {
+      model: "qwen-plus",
+      messages: [{ role: "user", content: prompt }]
+    }, {
+      headers: { "Authorization": `Bearer ${config.qwenKey}` }
+    });
+    return response.data.choices[0].message.content;
   }
 }

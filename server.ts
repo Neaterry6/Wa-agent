@@ -118,9 +118,11 @@ Be concise, helpful, and slightly savage when appropriate. You have full access 
   });
 
   bot.command("model", (ctx) => {
-    const model = ctx.message.text.split(" ")[1];
-    if (!['gemini', 'groq', 'qwen'].includes(model)) {
-      return ctx.reply("Usage: /model qwen | gemini | groq");
+    const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
+    const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen" };
+    const model = aliases[rawArg];
+    if (!model) {
+      return ctx.reply("Usage: /model gemini | groq | qwen (alias: grog)");
     }
     const state = getState(ctx.from!.id);
     state.model = model;
@@ -210,12 +212,16 @@ Delivered ${files.length} files. Enjoy!`, { parse_mode: 'Markdown' });
   });
 
   bot.on("text", async (ctx) => {
-    const t = ctx.message.text;
+    const t = ctx.message.text.trim();
+    const gitCloneMatch = t.match(/^git\s*clone\s+(https?:\/\/github\.com\/\S+)$/i) || t.match(/^gitclone\s+(https?:\/\/github\.com\/\S+)$/i);
+    if (gitCloneMatch) {
+      return executeShell(ctx, `git clone ${gitCloneMatch[1]}`);
+    }
     if (/^https?:\/\/github\.com\//i.test(t)) {
-      await ctx.reply("Detected GitHub URL. Use /gitclone <url> or /gitzip <url>.");
+      await ctx.reply("Detected GitHub URL. Use /gitclone <url> or /gitzip <url>, or send: git clone <url>.");
       return;
     }
-    if (t.startsWith("/")) return; 
+    if (t.startsWith("/")) return;
     await handleNaturalChat(ctx, t);
   });
 
