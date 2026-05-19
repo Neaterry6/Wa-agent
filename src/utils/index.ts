@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import archiver from "archiver";
+import { create as archiver } from "archiver";
 import AdmZip from "adm-zip";
 
 
