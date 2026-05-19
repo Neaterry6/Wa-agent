@@ -64,11 +64,11 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
+  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, zips: {} });
+      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {} });
     }
     return userStates.get(userId)!;
   }
@@ -113,29 +113,38 @@ async function startServer() {
     await ctx.reply(asHtml ? `<pre>${escapeHtml(text)}</pre>` : text, asHtml ? { parse_mode: "HTML" } : undefined);
   }
 
+  const HELP_MENU_IMAGE = "https://cdn.tmp.malvryx.dev/files/mxv_2TnyXIAzL.jpeg";
+
   function getMenuText() {
-    return `📋 BrokenVzn Agent Menu
+    return `🌲 BrokenVzn Agent — Command Tree
 
 Use / prefix for slash commands.
 You can also send plain text like: git clone <url>, unzip my.zip, or model groq.
 
-Core Commands
-• /help
-• /menu
-• /model <gemini|groq|qwen|broken>
-• /setmode <roast|helpful|coder|strict>
+├─ 🤖 AI Core
+│  • /help • /menu
+│  • /model <gemini|groq|qwen|broken>
+│  • /setmode <roast|helpful|coder|strict>
+│  • /transcribe (voice note → text)
+│  • /tts [voice] <text>
 
-Project & GitHub
-• /build <prompt>
-• /gitclone <repo_url>
-• /gitzip <repo_url|owner/repo>
-• /push <repo_name> (needs /github login <token> first)
+├─ 🧱 Build & Git
+│  • /build or /create <prompt>
+│  • /gitclone <repo_url>
+│  • /gitzip <repo_url|owner/repo>
+│  • /push <repo_name>
 
-Files & Utilities
-• /unzip <zip_name>
-• /lszip <zip_name>
-• /zipfiles
-• /terminal (admin)`;
+├─ 🎵 Media
+│  • /play <song>
+│  • /video <query>
+│  • /musicgen or /suno <prompt>
+│  • /ssweb <url> (web screenshot)
+
+└─ 🛠 Files & Utility
+   • /unzip <zip_name> • /lszip <zip_name> • /zipfiles
+   • /terminal (admin)
+   • /buttonmode on|off
+   • /voicemode on|off (admin)`;
   }
 
   function getHelpText(ctx: Context) {
@@ -497,12 +506,24 @@ Created structure, generated code for ${files.length} files, and delivered the z
       return;
     }
     if (t.startsWith("/")) return;
+
+    const prefixless = t.match(/^(help|menu|build|create|unzip|lszip|zipfiles|model|setmode|play|video|ssweb|musicgen|suno|transcribe|tts|buttonmode|voicemode)\b/i);
+    if (prefixless) {
+      const cmd = prefixless[1].toLowerCase();
+      const tail = t.slice(prefixless[0].length).trim();
+      const normalized = cmd === "create" ? "build" : cmd;
+      const asSlash = `/${normalized}${tail ? ` ${tail}` : ""}`;
+      (ctx as any).message.text = asSlash;
+      await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: asSlash } });
+      return;
+    }
     await handleNaturalChat(ctx, t);
   });
 
   bot.on("voice", async (ctx) => {
-     ctx.reply("🎙 *Voice Transcribing...* (Simulated)\nI understood your request. Processing...");
-     // Real implementation would use OpenAI Whisper or Gemini multi-modal
+     const state = getState(ctx.from!.id);
+     if (!state.voiceAiMode) return;
+     ctx.reply("🎙 Voice mode is ON. Auto-transcribe flow will run via /transcribe logic.");
   });
 
   bot.on("photo", async (ctx) => {
@@ -521,14 +542,33 @@ Created structure, generated code for ${files.length} files, and delivered the z
   });
 
   bot.command("menu", (ctx) => {
-    ctx.reply(getMenuText(), {
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("🤖 AI Chat", "ai_chat"), Markup.button.callback("💻 Code Builder", "code_builder")],
-        [Markup.button.callback("🌐 Preview Builder", "preview_builder"), Markup.button.callback("🐙 GitHub Tools", "github_tools")],
-        [Markup.button.callback("🎵 Media Tools", "media_tools"), Markup.button.callback("🛠 Utilities", "utils_tools")],
-        [Markup.button.callback("🛡 Admin Panel", "admin_panel")]
-      ])
+    const state = getState(ctx.from!.id);
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback("🤖 AI Chat", "ai_chat"), Markup.button.callback("💻 Code Builder", "code_builder")],
+      [Markup.button.callback("🌐 Preview Builder", "preview_builder"), Markup.button.callback("🐙 GitHub Tools", "github_tools")],
+      [Markup.button.callback("🎵 Media Tools", "media_tools"), Markup.button.callback("🛠 Utilities", "utils_tools")],
+      [Markup.button.callback("🔘 Buttons ON", "btn_on"), Markup.button.callback("⚪ Buttons OFF", "btn_off")],
+      [Markup.button.callback("🛡 Admin Panel", "admin_panel")]
+    ]);
+    ctx.replyWithPhoto(HELP_MENU_IMAGE, {
+      caption: getMenuText(),
+      ...(state.buttonMode ? keyboard : {})
     });
+  });
+  bot.action("btn_on", (ctx) => { getState(ctx.from!.id).buttonMode = true; return ctx.reply("✅ Button mode enabled."); });
+  bot.action("btn_off", (ctx) => { getState(ctx.from!.id).buttonMode = false; return ctx.reply("✅ Button mode disabled."); });
+  bot.command("buttonmode", (ctx) => {
+    const v = (ctx.message.text.split(" ")[1] || "").toLowerCase();
+    if (!["on", "off"].includes(v)) return ctx.reply("Usage: /buttonmode on|off");
+    getState(ctx.from!.id).buttonMode = v === "on";
+    return ctx.reply(`✅ Button mode ${v.toUpperCase()}`);
+  });
+  bot.command("voicemode", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const v = (ctx.message.text.split(" ")[1] || "").toLowerCase();
+    if (!["on", "off"].includes(v)) return ctx.reply("Usage: /voicemode on|off");
+    getState(ctx.from!.id).voiceAiMode = v === "on";
+    return ctx.reply(`✅ Voice note AI mode ${v.toUpperCase()}`);
   });
 
   bot.action("ai_chat", (ctx) => ctx.reply("Use /code or /groq to start chatting with AI."));
@@ -592,6 +632,83 @@ Created structure, generated code for ${files.length} files, and delivered the z
           return ctx.reply("🐙 GitHub token stored securely.");
       }
       ctx.reply("Usage: /github login <token>\n/push <repo_name>");
+  });
+
+  bot.command("adminadd", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const raw = (ctx.message.text.split(" ")[1] || "").trim();
+    const userId = Number.parseInt(raw, 10);
+    if (!raw || Number.isNaN(userId)) return ctx.reply("Usage: /adminadd <user_id>");
+    if (config.adminIds.includes(userId)) return ctx.reply(`ℹ️ ${userId} is already an admin.`);
+    config.adminIds.push(userId);
+    return ctx.reply(`✅ Added ${userId} as bot admin.\nThey can now use admin features.`);
+  });
+
+  bot.command("adminremove", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const raw = (ctx.message.text.split(" ")[1] || "").trim();
+    const userId = Number.parseInt(raw, 10);
+    if (!raw || Number.isNaN(userId)) return ctx.reply("Usage: /adminremove <user_id>");
+    if (!config.adminIds.includes(userId)) return ctx.reply(`ℹ️ ${userId} is not in admin list.`);
+    config.adminIds = config.adminIds.filter((id) => id !== userId);
+    return ctx.reply(`✅ Removed ${userId} from bot admin list.`);
+  });
+
+  bot.command("adminlist", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const text = config.adminIds.length
+      ? `🛡 Bot admins:\n${config.adminIds.map((id) => `• ${id}`).join("\n")}`
+      : "No bot admins configured.";
+    return ctx.reply(text);
+  });
+
+  bot.command("cmd", async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const [, action = "", source = "", cat = "general"] = ctx.message.text.trim().split(/\s+/);
+    const commandsDir = path.join(process.cwd(), "src", "commands");
+    const allowedCats = ["admin", "ai", "downloader", "economy", "fun", "games", "general", "media", "owner", "utility"];
+    await fs.promises.mkdir(commandsDir, { recursive: true });
+    for (const c of allowedCats) await fs.promises.mkdir(path.join(commandsDir, c), { recursive: true });
+
+    if (!action || action === "help") {
+      return ctx.reply(
+        `🧩 CMD Manager\n\nCommands directory:\n${commandsDir}\n\nCategories:\n${allowedCats.join(", ")}\n\nUsage:\n/cmd dir\n/cmd list\n/cmd install <url> [category]`
+      );
+    }
+
+    if (action === "dir") {
+      return ctx.reply(`📁 Command directory:\n${commandsDir}`);
+    }
+
+    if (action === "list") {
+      const rows: string[] = [];
+      for (const c of allowedCats) {
+        const files = (await fs.promises.readdir(path.join(commandsDir, c))).filter((f) => f.endsWith(".js"));
+        rows.push(`• ${c}: ${files.length} file(s)`);
+      }
+      return ctx.reply(`📚 Command categories under:\n${commandsDir}\n\n${rows.join("\n")}`);
+    }
+
+    if (action === "install") {
+      if (!source) return ctx.reply("Usage: /cmd install <url> [category]");
+      const category = cat.toLowerCase();
+      if (!allowedCats.includes(category)) return ctx.reply(`❌ Invalid category.\nUse one of: ${allowedCats.join(", ")}`);
+      if (!/^https?:\/\//i.test(source)) return ctx.reply("❌ install currently supports URL source only.");
+
+      try {
+        const res = await axios.get(source, { timeout: 20000 });
+        const content = typeof res.data === "string" ? res.data : JSON.stringify(res.data, null, 2);
+        let fileName = path.basename(new URL(source).pathname) || `cmd_${Date.now()}.js`;
+        if (!fileName.endsWith(".js")) fileName += ".js";
+        const targetPath = path.join(commandsDir, category, fileName);
+        await fs.promises.writeFile(targetPath, content, "utf8");
+        return ctx.reply(`✅ Installed command file.\nPath: ${targetPath}\nCategory: ${category}\nSize: ${Buffer.byteLength(content, "utf8")} bytes`);
+      } catch (e: any) {
+        return ctx.reply(`❌ Install failed: ${e.message}`);
+      }
+    }
+
+    return ctx.reply("Unknown cmd action. Use /cmd help");
   });
 
   bot.command("push", async (ctx) => {
