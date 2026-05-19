@@ -1,10 +1,12 @@
 import Database from "better-sqlite3";
 import path from "path";
+import axios from "axios";
+import { config } from "../config/index.ts";
 
 const db = new Database(path.join(process.cwd(), "agent.db"));
 
 // Initialize Schema
-db.exec(`
+ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT,
@@ -34,6 +36,54 @@ db.exec(`
   );
 `);
 
+const FIREBASE_MAX_CHATS = 50;
+const hasFirebaseConfig = Boolean(config.firebaseProjectId && config.firebaseApiKey && config.firebaseDatabaseId);
+
+function getFirestoreBaseUrl() {
+  const dbId = config.firebaseDatabaseId || "(default)";
+  return `https://firestore.googleapis.com/v1/projects/${config.firebaseProjectId}/databases/${dbId}/documents`;
+}
+
+async function saveChatToFirebase(userId: number, role: string, content: string) {
+  if (!hasFirebaseConfig) return;
+
+  const base = getFirestoreBaseUrl();
+  const now = new Date().toISOString();
+  const collectionPath = `${base}/users/${userId}/chats`;
+
+  await axios.post(`${collectionPath}?key=${config.firebaseApiKey}`, {
+    fields: {
+      user_id: { integerValue: String(userId) },
+      role: { stringValue: role },
+      content: { stringValue: content },
+      created_at: { timestampValue: now }
+    }
+  });
+
+  const listRes = await axios.get(`${collectionPath}?orderBy=created_at&key=${config.firebaseApiKey}`);
+  const docs = listRes.data?.documents || [];
+
+  if (docs.length > FIREBASE_MAX_CHATS) {
+    const toDelete = docs.slice(0, docs.length - FIREBASE_MAX_CHATS);
+    await Promise.all(toDelete.map((doc: any) => axios.delete(`${doc.name}?key=${config.firebaseApiKey}`)));
+  }
+}
+
+async function getChatsFromFirebase(userId: number, limit = 20): Promise<{ role: string; content: string }[]> {
+  if (!hasFirebaseConfig) return [];
+  const base = getFirestoreBaseUrl();
+  const collectionPath = `${base}/users/${userId}/chats`;
+  const listRes = await axios.get(`${collectionPath}?orderBy=created_at%20desc&pageSize=${Math.min(limit, FIREBASE_MAX_CHATS)}&key=${config.firebaseApiKey}`);
+  const docs = listRes.data?.documents || [];
+
+  return docs
+    .map((doc: any) => ({
+      role: doc.fields?.role?.stringValue || "user",
+      content: doc.fields?.content?.stringValue || ""
+    }))
+    .reverse();
+}
+
 export const DB = {
   getUser: (id: number) => db.prepare("SELECT * FROM users WHERE id = ?").get(id) as any,
   saveUser: (user: any) => {
@@ -51,11 +101,23 @@ export const DB = {
   banUser: (id: number, ban: boolean) => {
     db.prepare("UPDATE users SET is_banned = ? WHERE id = ?").run(ban ? 1 : 0, id);
   },
-  logChat: (userId: number, role: string, content: string) => {
+  logChat: async (userId: number, role: string, content: string) => {
     db.prepare("INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)").run(userId, role, content);
+    try {
+      await saveChatToFirebase(userId, role, content);
+    } catch {
+      // Keep local memory as fallback when firebase write fails.
+    }
   },
-  getHistory: (userId: number, limit = 20) => {
-    return db.prepare("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?").all(userId, limit).reverse() as any[];
+  getHistory: async (userId: number, limit = 20) => {
+    try {
+      const firebaseHistory = await getChatsFromFirebase(userId, limit);
+      if (firebaseHistory.length) return firebaseHistory;
+    } catch {
+      // Fall back to local sqlite history when firebase read fails.
+    }
+
+    return db.prepare("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?").all(userId, Math.min(limit, FIREBASE_MAX_CHATS)).reverse() as any[];
   },
   getAllUsers: () => db.prepare("SELECT * FROM users").all() as any[]
 };
