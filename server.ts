@@ -15,6 +15,25 @@ import { channelCheckMiddleware, isAdmin } from "./src/middleware/checkers.ts";
 import { Scraper } from "./src/tools/scraper.ts";
 import { Sandbox } from "./src/tools/sandbox.ts";
 
+function listMergeableFiles(rootDir: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === "build") continue;
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(rootDir, full);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile()) {
+        out.push(rel);
+      }
+    }
+  };
+  walk(rootDir);
+  return out;
+}
+
 
 function escapeHtml(text: string) {
   return text
@@ -266,6 +285,9 @@ Admin
         return buildProject(ctx, analysis.description || text);
       case "MEDIA_DOWNLOAD":
         const scrapeRes = await Scraper.scrape(analysis.url || text);
+        if (scrapeRes.status === "error") {
+          return ctx.reply(`❌ Scraper failed: ${scrapeRes.message || "unknown error"}`);
+        }
         return ctx.reply(`🌐 *Scraped:* ${scrapeRes.title}\n\n${scrapeRes.text?.slice(0, 500)}...`, { parse_mode: 'Markdown' });
       case "CMD_SHELL":
         if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
@@ -426,7 +448,10 @@ Created structure, generated code for ${files.length} files, and delivered the z
     fs.mkdirSync(mergeRoot, { recursive: true });
     await ctx.reply(`🧩 Starting multi-repo flow for ${repoUrls.length} repositories...`, { parse_mode: 'Markdown' });
 
-    const combinedChunks: string[] = [];
+    const mergeOutputRoot = path.join(mergeRoot, "merged_project");
+    fs.mkdirSync(mergeOutputRoot, { recursive: true });
+    const mergeReport: string[] = [];
+
     for (const repoUrl of repoUrls) {
       const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
       const target = path.join(mergeRoot, name);
@@ -434,18 +459,21 @@ Created structure, generated code for ${files.length} files, and delivered the z
       const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
       if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed for ${repoUrl}\n${out}`);
 
-      const repoFiles = FileUtils.listFiles(target);
-      for (const top of repoFiles) {
-        const full = path.join(target, top);
-        if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-          const content = FileUtils.readFile(full);
-          if (content) combinedChunks.push(`// === ${name}/${top} ===\n${content}`);
-        }
+      const repoFiles = listMergeableFiles(target);
+      const copiedForRepo: string[] = [];
+      for (const rel of repoFiles) {
+        const src = path.join(target, rel);
+        const namespacedRel = path.join(name, rel);
+        const dest = path.join(mergeOutputRoot, namespacedRel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(src, dest);
+        copiedForRepo.push(namespacedRel);
       }
+      mergeReport.push(`Repo: ${repoUrl}\nFiles copied: ${copiedForRepo.length}`);
     }
 
-    const outFile = path.join(mergeRoot, "combined_repos.txt");
-    FileUtils.writeFile(outFile, combinedChunks.join("\n\n"));
+    const outFile = path.join(mergeOutputRoot, "MERGE_REPORT.md");
+    FileUtils.writeFile(outFile, `# Merge Report\n\n${mergeReport.join("\n\n")}\n\n## Notes\n- Each repo is copied into a folder under merged_project/<repo_name> to avoid destructive collisions.\n- Ask the agent to scaffold an integration layer after merge if you want a single runnable app entrypoint.\n`);
     const zipPath = `${mergeRoot}.zip`;
     await FileUtils.zipFolder(mergeRoot, zipPath);
     state.cwd = mergeRoot;
@@ -563,6 +591,41 @@ ${chunks.join(' | ')}` : '';
     }
     if (t.startsWith("/")) return;
 
+    const naturalMediaIntent = (() => {
+      const v = t.trim();
+      const lowerText = v.toLowerCase();
+
+      const animeVideoMatch = lowerText.match(/(?:send|give|show|drop)?\s*(?:me\s+)?(?:an\s+)?anime\s+(?:vid|video)/i);
+      if (animeVideoMatch) return "/anivid";
+
+      const sunoMatch = lowerText.match(/(?:generate|make|create)\s+(?:me\s+)?(?:a\s+)?(?:song|music|track)\b(?:[:\-]?\s*)(.+)?/i);
+      if (sunoMatch) {
+        const prompt = (sunoMatch[1] || "").trim() || v;
+        return `/suno ${prompt}`.trim();
+      }
+
+      const songSendMatch = lowerText.match(/(?:send|play|find|get)\s+(?:me\s+)?(?:a\s+)?song\b(?:[:\-]?\s*)(.+)?/i);
+      if (songSendMatch) {
+        const query = (songSendMatch[1] || "").trim();
+        if (query) return `/play ${query}`;
+        return "/play";
+      }
+
+      const videoMatch = lowerText.match(/(?:send|find|show|get)\s+(?:me\s+)?(?:a\s+)?video\b(?:[:\-]?\s*)(.+)?/i);
+      if (videoMatch) {
+        const query = (videoMatch[1] || "").trim();
+        if (query) return `/video ${query}`;
+        return "/video";
+      }
+
+      return null;
+    })();
+    if (naturalMediaIntent) {
+      (ctx as any).message.text = naturalMediaIntent;
+      await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: naturalMediaIntent } });
+      return;
+    }
+
     const prefixless = t.match(/^(help|menu|build|create|unzip|lszip|zipfiles|model|setmode|play|video|ssweb|musicgen|suno|transcribe|tts|buttonmode|voicemode|search)\b/i);
     if (prefixless) {
       const cmd = prefixless[1].toLowerCase();
@@ -661,6 +724,69 @@ ${chunks.join(' | ')}` : '';
     return ctx.reply(`✅ Bot mode switched to *${selected.toUpperCase()}*`, { parse_mode: 'Markdown' });
   });
 
+  const handleBuildCommand = async (ctx: Context) => {
+    const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!prompt) return ctx.reply("Usage: /build <project description>");
+    return buildProject(ctx, prompt);
+  };
+  bot.command("build", handleBuildCommand);
+  bot.command("create", handleBuildCommand);
+
+  bot.command("scrape", async (ctx) => {
+    const raw = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!raw) return ctx.reply("Usage: /scrape <url>");
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const data = await Scraper.scrape(url);
+      if (data.status === "error") {
+        return ctx.reply(`❌ Scrape failed: ${data.message || "unknown error"}`);
+      }
+      return ctx.reply(`🌐 *${data.title || "Scraped page"}*\\n\\n${(data.text || "No text extracted").slice(0, 3500)}`, { parse_mode: "Markdown" });
+    } catch (e: any) {
+      return ctx.reply(`❌ Scrape failed: ${e.message}`);
+    }
+  });
+
+  bot.command("run", async (ctx) => {
+    const parts = ctx.message.text.trim().split(/\s+/);
+    const lang = (parts[1] || "").toLowerCase();
+    const code = ctx.message.text.split(" ").slice(2).join(" ").trim();
+    if (!lang || !code) return ctx.reply("Usage: /run <js|py|bash> <code>");
+    try {
+      const output = await Sandbox.runCode(lang, code);
+      return sendLongTextResponse(ctx, `🧪 Sandbox (${lang})\\n\\n${output}`, true);
+    } catch (e: any) {
+      return ctx.reply(`❌ Sandbox failed: ${e.message}`);
+    }
+  });
+
+  bot.command("agent", async (ctx) => {
+    const goal = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!goal) return ctx.reply("Usage: /agent <goal>");
+    const updates: string[] = [];
+    const pushUpdate = async (line: string) => {
+      updates.push(line);
+      await ctx.reply(`🤖 Agent update:\n${line}`);
+    };
+
+    await pushUpdate(`Goal received: ${goal}`);
+    await pushUpdate("Step 1/4: Creating execution plan...");
+    const planPrompt = `Break this goal into 4-7 concrete executable steps for a coding agent. Goal: ${goal}`;
+    const plan = await AIEngine.chat(planPrompt, [], "Return short numbered steps only.", "gemini");
+    await sendLongTextResponse(ctx, `🧭 Execution Plan\n\n${plan}`);
+
+    await pushUpdate("Step 2/4: Capturing context and memory...");
+    const history = await DB.getHistory(ctx.from!.id, 20);
+    await pushUpdate(`Loaded ${history.length} recent memory items.`);
+
+    await pushUpdate("Step 3/4: Selecting tools for next action...");
+    const toolHint = await AIEngine.chat(`Given this goal, choose ONE immediate tool action to start with: shell|scrape|sandbox|chat. Goal: ${goal}`, history, "Answer with one word.", "gemini");
+    await pushUpdate(`Selected tool path: ${toolHint.trim()}`);
+
+    await pushUpdate("Step 4/4: Checkpoint reached. Waiting for your go-ahead before execution.");
+    await ctx.reply("Reply with `continue` to execute the first planned step, or tell me what to adjust.");
+  });
+
 
   bot.command("qwen", async (ctx) => {
       const prompt = ctx.message.text.split(" ").slice(1).join(" ");
@@ -753,6 +879,82 @@ ${url}` });
     const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
     (ctx as any).message.text = `/suno ${prompt}`;
     await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: (ctx as any).message.text } });
+  });
+
+  bot.command("audio", async (ctx) => {
+    const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!prompt) return ctx.reply("Usage: /audio <music prompt>");
+    (ctx as any).message.text = `/suno ${prompt}`;
+    await (bot as any).handleUpdate({ ...ctx.update, message: { ...ctx.message, text: (ctx as any).message.text } });
+  });
+
+  bot.command("image", async (ctx) => {
+    const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!prompt) return ctx.reply("Usage: /image <prompt>");
+    try {
+      const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true&width=1024&height=1024`;
+      return ctx.replyWithPhoto({ url: imageUrl }, { caption: `🖼️ Prompt: ${prompt}` });
+    } catch (e: any) {
+      return ctx.reply(`❌ Image generation failed: ${e.message}`);
+    }
+  });
+
+  bot.command("video", async (ctx) => {
+    const query = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!query) return ctx.reply("Usage: /video <query>");
+    try {
+      const { data } = await axios.get("https://api.duckduckgo.com/", {
+        params: { q: `${query} site:youtube.com`, format: "json", no_html: 1, no_redirect: 1 },
+        timeout: 20000
+      });
+      const first = data?.RelatedTopics?.find?.((x: any) => x?.FirstURL)?.FirstURL;
+      if (!first) return ctx.reply(`No quick video results found for: ${query}`);
+      return ctx.reply(`🎬 Top result for *${query}*\\n${first}`, { parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
+    } catch (e: any) {
+      return ctx.reply(`❌ Video search failed: ${e.message}`);
+    }
+  });
+
+  bot.command("play", async (ctx) => {
+    const query = ctx.message.text.split(" ").slice(1).join(" ").trim();
+    if (!query) return ctx.reply("Usage: /play <song name>");
+    try {
+      const { data } = await axios.get("https://api.popcat.xyz/spotify", {
+        params: { q: query },
+        timeout: 25000
+      });
+      if (!data || data.error) return ctx.reply(`❌ No Spotify result found for: ${query}`);
+      const title = data.title || query;
+      const artist = data.artist || "Unknown";
+      const link = data.url || data.link || data.external_urls?.spotify;
+      const preview = data.preview || data.preview_url;
+      const cover = data.image || data.thumbnail;
+      const caption = `🎵 *${title}*\n👤 ${artist}\n${link ? `🔗 ${link}` : ""}`.trim();
+      if (preview) return ctx.replyWithAudio({ url: preview }, { caption, parse_mode: "Markdown" });
+      if (cover) return ctx.replyWithPhoto({ url: cover }, { caption, parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
+      return ctx.reply(caption, { parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
+    } catch (e: any) {
+      return ctx.reply(`❌ Spotify command failed: ${e.message}`);
+    }
+  });
+
+  bot.command("anivid", async (ctx) => {
+    const sources = [
+      "https://arychauhann.onrender.com/api/sfmhentai",
+      "https://arychauhann.onrender.com/api/hentai"
+    ];
+    try {
+      for (const source of sources) {
+        try {
+          const { data } = await axios.get(source, { timeout: 45000, headers: { "User-Agent": "Mozilla/5.0" } });
+          const url = data?.video || data?.url || data?.result?.url || data?.data?.url || data?.data?.video;
+          if (url) return ctx.replyWithVideo({ url }, { caption: `🎬 anivid\nsource: ${source}` });
+        } catch {}
+      }
+      return ctx.reply("❌ Failed to fetch anime video from API sources.");
+    } catch (e: any) {
+      return ctx.reply(`❌ anivid failed: ${e.message}`);
+    }
   });
 
   bot.command("ping", (ctx) => {
