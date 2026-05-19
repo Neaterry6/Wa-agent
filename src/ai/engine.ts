@@ -6,6 +6,10 @@ import { randomUUID } from "crypto";
 import { config } from "../config/index.ts";
 
 export class AIEngine {
+  private static normalizeGroqBaseUrl(rawBaseUrl: string) {
+    return rawBaseUrl.replace(/\/openai\/v1\/?$/i, "");
+  }
+
   private static ai = new GoogleGenAI({
     apiKey: config.geminiKey,
     httpOptions: {
@@ -14,7 +18,21 @@ export class AIEngine {
       }
     }
   });
-  private static groq = new Groq({ apiKey: config.groqKey });
+  private static groq = new Groq({
+    apiKey: config.groqKey,
+    baseURL: this.normalizeGroqBaseUrl(config.groqBaseUrl),
+  });
+
+  private static buildMessages(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "") {
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
+    if (systemInstruction) messages.push({ role: "system", content: systemInstruction });
+    for (const h of history) {
+      const role = h.role === "model" ? "assistant" : (h.role as "system" | "user" | "assistant");
+      if (role === "system" || role === "user" || role === "assistant") messages.push({ role, content: h.content });
+    }
+    messages.push({ role: "user", content: prompt });
+    return messages;
+  }
 
   private static async withFallback(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", preferred: string = "gemini") {
     const fallbackOrder = preferred === "broken"
@@ -26,8 +44,8 @@ export class AIEngine {
     for (const provider of order) {
       try {
         if (provider === "gemini") return await this.generateGemini(prompt, systemInstruction);
-        if (provider === "groq") return await this.generateGroq(this.mergePrompt(prompt, systemInstruction), config.groqModel);
-        if (provider === "qwen") return await this.generateQwen(this.mergePrompt(prompt, systemInstruction));
+        if (provider === "groq") return await this.generateGroq(this.buildMessages(prompt, history, systemInstruction), config.groqModel);
+        if (provider === "qwen") return await this.generateQwen(this.buildMessages(prompt, history, systemInstruction));
         if (provider === "broken") return await this.generateBroken(prompt, history, systemInstruction);
       } catch (e) {
         errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
@@ -117,20 +135,21 @@ Examples:
     return response.text || "I analyzed the image but couldn't produce a detailed response.";
   }
 
-  static async generateGroq(prompt: string, model: string = config.groqModel) {
+  static async generateGroq(messages: { role: "system" | "user" | "assistant"; content: string }[], model: string = config.groqModel) {
     if (!config.groqKey) throw new Error("GROQ_API_KEY missing");
     const chatCompletion = await this.groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
+      messages,
       model: model,
     });
     return chatCompletion.choices[0]?.message?.content || "";
   }
 
-  static async generateQwen(prompt: string) {
+  static async generateQwen(messages: { role: "system" | "user" | "assistant"; content: string }[]) {
     if (!config.qwenKey) throw new Error("QWEN_API_KEY is not configured.");
-    const response = await axios.post("https://api.qwen.aikit.club/v1/chat/completions", {
-      model: "qwen-plus",
-      messages: [{ role: "user", content: prompt }]
+    const baseUrl = config.qwenBaseUrl.replace(/\/$/, "");
+    const response = await axios.post(`${baseUrl}/chat/completions`, {
+      model: config.qwenModel,
+      messages
     }, {
       headers: { "Authorization": `Bearer ${config.qwenKey}` }
     });

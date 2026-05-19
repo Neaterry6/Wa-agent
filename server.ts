@@ -97,7 +97,7 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean }>();
+  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
@@ -152,11 +152,11 @@ async function startServer() {
     return `🌲 BrokenVzn Agent — Command Tree
 
 Use / prefix for slash commands.
-You can also send plain text like: git clone <url>, unzip my.zip, or model groq.
+You can also send plain text like: git clone <url>, unzip my.zip, or model grog.
 
 ├─ 🤖 AI Core
 │  • /help • /menu
-│  • /model <gemini|groq|qwen|broken>
+│  • /model <gemini|grog|qwen|broken>
 │  • /setmode <roast|helpful|coder|strict>
 │  • /transcribe (voice note → text)
 │  • /tts [voice] <text>
@@ -192,7 +192,7 @@ Bot Menu
 User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
 
 You can use commands with "/" OR without prefix.
-Example: "help", "menu", "model groq", "unzip my.zip"
+Example: "help", "menu", "model grog", "unzip my.zip"
 
 AI + Chat
 • /help or /menu
@@ -362,7 +362,7 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
     const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
     const model = aliases[rawArg];
     if (!model) {
-      return ctx.reply("Usage: /model gemini | groq | qwen | broken (alias: grog)");
+      return ctx.reply("Usage: /model gemini | grog | qwen | broken (alias: groq)");
     }
     const state = getState(ctx.from!.id);
     state.model = model;
@@ -385,14 +385,18 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
 
   // --- BUILD LOGIC ---
 
-  async function buildProject(ctx: Context, description: string) {
+  async function buildProject(ctx: Context, description: string, techStack: string) {
     const msg = await ctx.reply(`🏗 *Project Construction Started*
 Analyzing requirements...`, { parse_mode: 'Markdown' });
 
     try {
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
 1/4 Creating file structure blueprint...`, { parse_mode: 'Markdown' });
-      const rawCode = await AIEngine.generateProject(description);
+      const enhancedDescription = `${description}
+
+Tech stack requirement from user: ${techStack}.
+Respect this stack and generate all required files.`;
+      const rawCode = await AIEngine.generateProject(enhancedDescription);
       const files = FileUtils.parseProjectCode(rawCode);
 
       if (files.length === 0) {
@@ -404,7 +408,10 @@ Analyzing requirements...`, { parse_mode: 'Markdown' });
       const buildDir = path.join(process.cwd(), "builds", `prj_${Date.now()}`);
       fs.mkdirSync(buildDir, { recursive: true });
 
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const next = files[i + 1];
+        await ctx.reply(`🧠 Coded: \`${file.name}\`${next ? `\n⏭ Next: \`${next.name}\`` : ""}`, { parse_mode: "Markdown" });
         FileUtils.writeFile(path.join(buildDir, file.name), file.content);
       }
 
@@ -416,12 +423,23 @@ Analyzing requirements...`, { parse_mode: 'Markdown' });
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
 4/4 Uploading zip to Telegram...`, { parse_mode: 'Markdown' });
       await ctx.replyWithDocument({ source: zipPath, filename: "project_source.zip" });
+      const state = getState(ctx.from!.id);
+      state.lastZip = zipPath;
+      state.pendingDeployZip = zipPath;
+      state.pendingDeployDir = buildDir;
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `✅ *Build Complete*
 Created structure, generated code for ${files.length} files, and delivered the zip file.`, { parse_mode: 'Markdown' });
+      await ctx.reply("Deploy now to Render free plan? Reply with `yes deploy` or `no deploy`.", { parse_mode: "Markdown" });
 
     } catch (e: any) {
       ctx.reply(`❌ *Build Error:* ${e.message}`, { parse_mode: 'Markdown' });
     }
+  }
+
+  async function deployToRender(ctx: Context, projectDir: string) {
+    if (!config.renderKey) return ctx.reply("❌ Render API key is missing. Set RENDER_API_KEY first.");
+    const msg = await ctx.reply("🚀 *Starting Render deployment (Free plan)...*", { parse_mode: "Markdown" });
+    await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `⚠️ Render deployment requires a connected Git repository.\n\nI prepared the project at:\n\`${projectDir}\`\n\nNext:\n1) Push this project to GitHub\n2) Run /hostren to deploy from repo on free plan.`, { parse_mode: "Markdown" });
   }
 
   async function executeShell(ctx: Context, cmd: string) {
@@ -565,6 +583,26 @@ ${chunks.join(' | ')}` : '';
     }
     if (lower === "menu" || lower === "/menu") {
       return ctx.reply(getMenuText());
+    }
+    const state = getState(ctx.from!.id);
+    if (state.pendingBuildDescription) {
+      const tech = t;
+      const description = state.pendingBuildDescription;
+      state.pendingBuildDescription = undefined;
+      await ctx.reply(`✅ Using tech stack: *${tech}*`, { parse_mode: "Markdown" });
+      return buildProject(ctx, description, tech);
+    }
+    if (state.pendingDeployZip && /^(yes deploy|deploy yes|yes)$/i.test(lower)) {
+      const deployDir = state.pendingDeployDir;
+      state.pendingDeployZip = undefined;
+      state.pendingDeployDir = undefined;
+      if (!deployDir) return ctx.reply("❌ No project found for deployment.");
+      return deployToRender(ctx, deployDir);
+    }
+    if (state.pendingDeployZip && /^(no deploy|deploy no|no)$/i.test(lower)) {
+      state.pendingDeployZip = undefined;
+      state.pendingDeployDir = undefined;
+      return ctx.reply("👍 Deployment skipped. You can deploy later with /hostren after pushing to GitHub.");
     }
 
     const gitCloneMatch = t.match(/^git\s*clone\s+(https?:\/\/github\.com\/\S+)$/i) || t.match(/^gitclone\s+(https?:\/\/github\.com\/\S+)$/i);
@@ -729,7 +767,9 @@ ${chunks.join(' | ')}` : '';
   const handleBuildCommand = async (ctx: Context) => {
     const prompt = ctx.message.text.split(" ").slice(1).join(" ").trim();
     if (!prompt) return ctx.reply("Usage: /build <project description>");
-    return buildProject(ctx, prompt);
+    const state = getState(ctx.from!.id);
+    state.pendingBuildDescription = prompt;
+    return ctx.reply("Pick the tech stack for this project.\nExamples:\n• Node.js + Express\n• React + Vite + TypeScript\n• Next.js + Tailwind\n\nReply with your preferred stack.");
   };
   bot.command("build", handleBuildCommand);
   bot.command("create", handleBuildCommand);
@@ -1329,7 +1369,7 @@ ${data.description || 'No description'}`);
         .catch(err => {
           botStatus = "failed";
           const message = err instanceof Error ? err.message : String(err);
-          const looksLikeInvalidToken = message.includes("404") || message.includes("Not Found");
+          const looksLikeInvalidToken = /(?:ETELEGRAM:\s*)?(401|Unauthorized)/i.test(message);
           botError = looksLikeInvalidToken
             ? `${message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
             : message;
