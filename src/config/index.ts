@@ -27,6 +27,10 @@ export const config = {
     .map((name) => name.trim())
     .filter(Boolean),
   qwenBaseUrl: process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  notteKey: process.env.NOTTE_API_KEY || "",
+  notteBaseUrl: process.env.NOTTE_BASE_URL || "https://anything.notte.cc/api/v1",
+  notteGeneralModel: process.env.NOTTE_GENERAL_MODEL || "notte-general",
+  notteCodeModel: process.env.NOTTE_CODE_MODEL || "notte-coder-pro",
   brokenHost: process.env.BROKEN_HOST || "gemini.talkai.info",
   brokenPath: process.env.BROKEN_PATH || "/pt/chat/send/",
   brokenModel: process.env.BROKEN_MODEL || "gemini-2.0-flash-lite",

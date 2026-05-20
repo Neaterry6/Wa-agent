@@ -99,13 +99,39 @@ async function startServer() {
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
   const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean; pendingZipEdit?: boolean }>();
+  const whitelistPath = path.join(process.cwd(), "storage", "allowed-users.json");
+  if (!fs.existsSync(path.dirname(whitelistPath))) fs.mkdirSync(path.dirname(whitelistPath), { recursive: true });
+  const loadAllowedUsers = () => {
+    if (!fs.existsSync(whitelistPath)) return new Set<string>();
+    try {
+      const raw = fs.readFileSync(whitelistPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return new Set(parsed.map(String));
+      return new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  };
+  const saveAllowedUsers = (ids: Set<string>) => fs.writeFileSync(whitelistPath, JSON.stringify([...ids], null, 2));
+  const allowedUsers = loadAllowedUsers();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
+      userStates.set(userId, { model: 'notte', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
     }
     return userStates.get(userId)!;
   }
+
+  bot.use((ctx, next) => {
+    if (!ctx.from) return next();
+    if (isAdmin(ctx)) return next();
+    const userId = String(ctx.from.id);
+    if (!allowedUsers.has(userId)) {
+      ctx.reply("🚫 You are not authorized to use this bot. Ask an admin to run /accept <your_id>.");
+      return;
+    }
+    return next();
+  });
 
   async function notifyAdminsUserActivity(ctx: Context, source: string) {
     if (!ctx.from || isAdmin(ctx)) return;
@@ -461,10 +487,10 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
 
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    const aliases: Record<string, string> = { gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
+    const aliases: Record<string, string> = { notte: "notte", gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
     const model = aliases[rawArg];
     if (!model) {
-      return ctx.reply("Usage: /model gemini | grog | qwen | broken (alias: groq)");
+      return ctx.reply("Usage: /model notte | gemini | grog | qwen | broken (alias: groq)");
     }
     const state = getState(ctx.from!.id);
     state.model = model;
@@ -1293,6 +1319,46 @@ ${link}`, { link_preview_options: { is_disabled: false } });
     if (!names.length) return ctx.reply("No saved ZIP files yet.");
     return ctx.reply(`📦 Saved ZIP names:
 ${names.map(n => `• ${n}`).join("\n")}`);
+  });
+
+  bot.command("accept", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const userId = (ctx.message.text.split(" ")[1] || "").trim();
+    if (!userId) return ctx.reply("Usage: /accept <telegram_id>");
+    allowedUsers.add(userId);
+    saveAllowedUsers(allowedUsers);
+    return ctx.reply(`✅ User ${userId} accepted.`);
+  });
+
+  bot.command("reject", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const userId = (ctx.message.text.split(" ")[1] || "").trim();
+    if (!userId) return ctx.reply("Usage: /reject <telegram_id>");
+    allowedUsers.delete(userId);
+    saveAllowedUsers(allowedUsers);
+    return ctx.reply(`🚫 User ${userId} rejected.`);
+  });
+
+  bot.command("status", async (ctx) => {
+    const userId = ctx.from?.id;
+    const state = userId ? getState(userId) : null;
+    return ctx.reply(`📊 Bot is running.\nMain AI: Notte\nFallbacks: Qwen, Gemini, Groq\nCurrent model: ${state?.model || "notte"}\nWhitelisted users: ${allowedUsers.size}`);
+  });
+
+  bot.command("ask", async (ctx) => {
+    const query = ctx.message.text.replace(/^\/ask(@\w+)?/i, "").trim();
+    if (!query) return ctx.reply("Usage: /ask <query>");
+    await ctx.reply("🔎 Researching with Notte AI...");
+    const reply = await AIEngine.chat(query, [], "You are the main AI agent handling search and responses.", "notte");
+    return sendLongTextResponse(ctx, normalizeModelReply(reply));
+  });
+
+  bot.command("code", async (ctx) => {
+    const task = ctx.message.text.replace(/^\/code(@\w+)?/i, "").trim();
+    if (!task) return ctx.reply("Usage: /code <task>");
+    await ctx.reply("💻 Coding with Notte AI...");
+    const reply = await AIEngine.chat(task, [], "You are the main AI agent handling coding tasks. Return clean code and concise explanations.", "notte");
+    return sendLongTextResponse(ctx, normalizeModelReply(reply));
   });
 
   bot.command("heal", async (ctx) => {
