@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import * as archiver from "archiver";
+import archiver from "archiver";
 import { stat } from "fs/promises";
 import AdmZip from "adm-zip";
 
@@ -37,7 +37,7 @@ export class FileUtils {
 
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outPath);
-      const archive = archiver.create("zip", { zlib: { level: 9 } });
+      const archive = archiver("zip", { zlib: { level: 9 } });
       let settled = false;
 
       const fail = (err: Error) => {
