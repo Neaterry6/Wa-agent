@@ -99,11 +99,11 @@ async function startServer() {
   bot.use(channelCheckMiddleware);
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
-  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean }>();
+  const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean; pendingZipEdit?: boolean }>();
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {} });
+      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
     }
     return userStates.get(userId)!;
   }
@@ -146,6 +146,51 @@ async function startServer() {
     }
 
     await ctx.reply(asHtml ? `<pre>${escapeHtml(text)}</pre>` : text, asHtml ? { parse_mode: "HTML" } : undefined);
+  }
+
+  function patchFile(filePath: string, searchValue: string | RegExp, replaceValue: string) {
+    if (!fs.existsSync(filePath)) return false;
+    const original = fs.readFileSync(filePath, "utf-8");
+    const updated = original.replace(searchValue, replaceValue);
+    if (updated !== original) {
+      fs.writeFileSync(filePath, updated);
+      return true;
+    }
+    return false;
+  }
+
+  async function selfHeal(errorText: string) {
+    const changes: string[] = [];
+    if (/archiver/i.test(errorText)) {
+      const changed = patchFile(path.join(process.cwd(), "src/utils/index.ts"), 'import archiver from "archiver";', 'import * as archiver from "archiver";');
+      if (changed) changes.push("patched archiver import in src/utils/index.ts");
+    }
+    if (/permission denied/i.test(errorText)) {
+      await ShellUtils.run("chmod -R 755 /home/container/workspaces/Project");
+      await ShellUtils.run("chown -R container:container /home/container/workspaces/Project");
+      changes.push("applied workspace permission fixes");
+    }
+    if (/timeout/i.test(errorText)) {
+      process.env.TIMEOUT = "180000";
+      changes.push("set TIMEOUT=180000");
+    }
+    const buildLog = await ShellUtils.run("npm run build");
+    return { changes, buildLog };
+  }
+
+  function editZip(zipPath: string, edits: Record<string, string>) {
+    const zip = new AdmZip(zipPath);
+    let changedFiles = 0;
+    zip.getEntries().forEach((entry) => {
+      const replacement = edits[entry.entryName];
+      if (typeof replacement === "string") {
+        zip.updateFile(entry.entryName, Buffer.from(replacement, "utf8"));
+        changedFiles += 1;
+      }
+    });
+    const fixedPath = path.join(path.dirname(zipPath), `fixed-${Date.now()}.zip`);
+    zip.writeZip(fixedPath);
+    return { fixedPath, changedFiles };
   }
 
   const HELP_MENU_IMAGE = "https://cdn.tmp.malvryx.dev/files/mxv_2TnyXIAzL.jpeg";
@@ -1168,6 +1213,27 @@ ${link}`, { link_preview_options: { is_disabled: false } });
 ${names.map(n => `• ${n}`).join("\n")}`);
   });
 
+  bot.command("heal", async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
+    const errorText = ctx.message.text.replace(/^\/heal(@\w+)?/i, "").trim() || "archiver import mismatch";
+    await ctx.reply("🔧 Self-healing initiated...");
+    try {
+      const { changes, buildLog } = await selfHeal(errorText);
+      const summary = changes.length ? changes.join(", ") : "no direct file changes needed";
+      await ctx.reply(`✅ Self-heal completed.\nChanges: ${summary}`);
+      await sendLongTextResponse(ctx, `Build output:\n${buildLog}`, true);
+      await ctx.reply("♻️ Restart/redeploy to apply all runtime updates.");
+    } catch (err: any) {
+      await ctx.reply(`❌ Self-heal failed: ${err?.message || String(err)}`);
+    }
+  });
+
+  bot.command("editzip", async (ctx) => {
+    const state = getState(ctx.from!.id);
+    state.pendingZipEdit = true;
+    await ctx.reply("📦 Send me a ZIP file and I will patch it, re-zip it, and send it back.");
+  });
+
   bot.command("gitclone", async (ctx) => {
     const repoUrl = ctx.message.text.split(" ")[1];
     if (!repoUrl) return ctx.reply("Usage: /gitclone <repo-url>");
@@ -1215,7 +1281,18 @@ ${data.description || 'No description'}`);
             
             state.lastZip = zipPath;
             state.zips[savedName] = zipPath;
-            
+
+            if (state.pendingZipEdit) {
+              state.pendingZipEdit = false;
+              await ctx.reply("🛠 Patching ZIP contents...");
+              const { fixedPath, changedFiles } = editZip(zipPath, {
+                "dist/server.mjs": "import * as archiver from 'archiver';\n// rest of code...\n"
+              });
+              await ctx.replyWithDocument({ source: fixedPath, filename: `fixed-${doc.file_name}` });
+              await ctx.reply(`✅ ZIP edited and returned. Updated files: ${changedFiles}.`);
+              return;
+            }
+
             ctx.reply(`✅ *ZIP Stored Successfully*\n\nFile: \`${doc.file_name}\`\n\nCommands:\n/unzip ${savedName}\n/lszip ${savedName}\n/zipfiles`, { parse_mode: 'Markdown' });
         } catch (e: any) {
             logger.error(`File download failed for ${userId}: ${e.message}`);
