@@ -520,6 +520,38 @@ Created structure, generated code for ${files.length} files, and delivered the z
     return ctx.reply(`✅ Cloned ${name} and switched workspace.`);
   }
 
+  function parseGithubRepoInput(input: string): { owner: string; repo: string } | null {
+    const raw = input.trim().replace(/\.git$/i, "").replace(/\/+$/g, "");
+    const slug = raw
+      .replace(/^https?:\/\/github\.com\//i, "")
+      .replace(/^git@github\.com:/i, "");
+    const parts = slug.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return { owner: parts[0], repo: parts[1] };
+  }
+
+  async function sendGithubRepoZip(ctx: Context, repoInput: string) {
+    const parsed = parseGithubRepoInput(repoInput);
+    if (!parsed) return ctx.reply("Usage: /gitzip <repo-url|owner/repo>");
+
+    const { owner, repo } = parsed;
+    const branches = ["main", "master"];
+
+    for (const branch of branches) {
+      const zipUrl = `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${branch}`;
+      try {
+        const response = await axios.get(zipUrl, { responseType: "arraybuffer", timeout: 30000 });
+        const filename = `${repo}-${branch}.zip`;
+        await ctx.replyWithDocument({ source: Buffer.from(response.data), filename });
+        return ctx.reply(`✅ Sent ${owner}/${repo} as ZIP from branch "${branch}".`);
+      } catch (_e) {
+        // Try next default branch candidate
+      }
+    }
+
+    return ctx.reply(`❌ Could not download ZIP for ${owner}/${repo}. Tried branches: main, master.`);
+  }
+
 
   async function cloneAndMergeRepos(ctx: Context, repoUrls: string[]) {
     const userId = ctx.from!.id;
@@ -1237,7 +1269,8 @@ ${names.map(n => `• ${n}`).join("\n")}`);
   bot.command("gitclone", async (ctx) => {
     const repoUrl = ctx.message.text.split(" ")[1];
     if (!repoUrl) return ctx.reply("Usage: /gitclone <repo-url>");
-    return cloneRepoToWorkspace(ctx, repoUrl);
+    await cloneRepoToWorkspace(ctx, repoUrl);
+    return sendGithubRepoZip(ctx, repoUrl);
   });
 
   bot.command("gitlookup", async (ctx) => {
@@ -1251,9 +1284,8 @@ ${data.description || 'No description'}`);
 
   bot.command("gitzip", async (ctx) => {
     const repoUrl = ctx.message.text.split(" ")[1];
-    if (!repoUrl) return ctx.reply("Usage: /gitzip <repo-url>");
-    const zipUrl = repoUrl.replace(/\.git$/, '') + '/archive/refs/heads/main.zip';
-    return ctx.replyWithDocument({ url: zipUrl, filename: 'repo-main.zip' });
+    if (!repoUrl) return ctx.reply("Usage: /gitzip <repo-url|owner/repo>");
+    return sendGithubRepoZip(ctx, repoUrl);
   });
 
   // --- FILE HANDLING ---
