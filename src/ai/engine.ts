@@ -157,13 +157,29 @@ Examples:
   static async generateQwen(messages: { role: "system" | "user" | "assistant"; content: string }[]) {
     if (!config.qwenKey) throw new Error("QWEN_API_KEY is not configured.");
     const baseUrl = config.qwenBaseUrl.replace(/\/$/, "");
-    const response = await axios.post(`${baseUrl}/chat/completions`, {
-      model: config.qwenModel,
-      messages
-    }, {
-      headers: { "Authorization": `Bearer ${config.qwenKey}` }
-    });
-    return response.data.choices[0].message.content;
+    const modelList = config.qwenModels?.length ? config.qwenModels : [config.qwenModel];
+    const errors: string[] = [];
+
+    for (const model of modelList) {
+      try {
+        const response = await axios.post(`${baseUrl}/chat/completions`, {
+          model,
+          messages
+        }, {
+          headers: { "Authorization": `Bearer ${config.qwenKey}` }
+        });
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (content) return content;
+        errors.push(`${model}: empty response`);
+      } catch (error: any) {
+        const status = error?.response?.status;
+        const code = error?.response?.data?.error?.code;
+        const message = error?.response?.data?.error?.message || error?.message || "Unknown error";
+        errors.push(`${model}: ${status || code || "error"} ${message}`);
+      }
+    }
+
+    throw new Error(`Qwen model rotation failed. ${errors.join(" | ")}`);
   }
 
   static async generateBroken(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "") {

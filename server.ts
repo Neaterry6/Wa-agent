@@ -187,16 +187,18 @@ async function startServer() {
   function editZip(zipPath: string, edits: Record<string, string>) {
     const zip = new AdmZip(zipPath);
     let changedFiles = 0;
+    const touched: string[] = [];
     zip.getEntries().forEach((entry) => {
       const replacement = edits[entry.entryName];
       if (typeof replacement === "string") {
         zip.updateFile(entry.entryName, Buffer.from(replacement, "utf8"));
         changedFiles += 1;
+        touched.push(entry.entryName);
       }
     });
     const fixedPath = path.join(path.dirname(zipPath), `fixed-${Date.now()}.zip`);
     zip.writeZip(fixedPath);
-    return { fixedPath, changedFiles };
+    return { fixedPath, changedFiles, touched };
   }
 
   function watchLogs(logFile: string) {
@@ -1301,7 +1303,7 @@ ${names.map(n => `• ${n}`).join("\n")}`);
   bot.command("editzip", async (ctx) => {
     const state = getState(ctx.from!.id);
     state.pendingZipEdit = true;
-    await ctx.reply("📦 Send me a ZIP file and I will patch it, re-zip it, and send it back.");
+    await ctx.reply("📦 Send me a ZIP file and I will patch it, re-zip it, and return the real ZIP as a Telegram document.");
   });
 
   bot.command("gitclone", async (ctx) => {
@@ -1355,11 +1357,16 @@ ${data.description || 'No description'}`);
             if (state.pendingZipEdit) {
               state.pendingZipEdit = false;
               await ctx.reply("🛠 Patching ZIP contents...");
-              const { fixedPath, changedFiles } = editZip(zipPath, {
+              const { fixedPath, changedFiles, touched } = editZip(zipPath, {
                 "dist/server.mjs": "import * as archiver from 'archiver';\n"
               });
-              await ctx.replyWithDocument({ source: fixedPath, filename: `fixed-${doc.file_name}` });
-              await ctx.reply(`✅ ZIP edited and returned. Updated files: ${changedFiles}.`);
+              const deliveredName = `fixed-${doc.file_name || "project.zip"}`;
+              await ctx.replyWithDocument({
+                source: fs.createReadStream(fixedPath),
+                filename: deliveredName
+              });
+              const touchedLabel = touched.length ? `\nFiles: ${touched.map((name) => `• ${name}`).join("\n")}` : "";
+              await ctx.reply(`✅ ZIP edited and returned as a real document.\nUpdated files: ${changedFiles}.${touchedLabel}`);
               return;
             }
 
