@@ -37,7 +37,7 @@ export class FileUtils {
 
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outPath);
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const archive = archiver.create("zip", { zlib: { level: 9 } });
       let settled = false;
 
       const fail = (err: Error) => {
