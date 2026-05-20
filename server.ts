@@ -161,8 +161,11 @@ async function startServer() {
   async function selfHeal(errorText: string) {
     const changes: string[] = [];
     if (/archiver/i.test(errorText)) {
-      const changed = patchFile(path.join(process.cwd(), "src/utils/index.ts"), 'import archiver from "archiver";', 'import * as archiver from "archiver";');
-      if (changed) changes.push("patched archiver import in src/utils/index.ts");
+      const targetFile = path.join(process.cwd(), "src/utils/index.ts");
+      const importPatched = patchFile(targetFile, /import\s+archiver\s+from\s+["']archiver["'];?/, 'import * as archiver from "archiver";');
+      const createPatched = patchFile(targetFile, /archiver\.create\(\s*["']zip["']\s*,/g, 'archiver("zip",');
+      if (importPatched) changes.push("patched archiver import in src/utils/index.ts");
+      if (createPatched) changes.push("patched archiver.create() call in src/utils/index.ts");
     }
     if (/permission denied/i.test(errorText)) {
       await ShellUtils.run("chmod -R 755 /home/container/workspaces/Project");
@@ -219,6 +222,7 @@ async function startServer() {
           { pattern: /TimeoutError/i, label: "TimeoutError" },
           { pattern: /SyntaxError/i, label: "SyntaxError" },
           { pattern: /Permission denied/i, label: "Permission denied" },
+          { pattern: /archiver\.create is not a function/i, label: "archiver" },
         ];
 
         const detected = errorSignals.find((signal) => signal.pattern.test(delta));
