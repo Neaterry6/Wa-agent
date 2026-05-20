@@ -92,9 +92,7 @@ async function startServer() {
   let botError: string | null = null;
   let botInfo: any = null;
 
-  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN", {
-    handlerTimeout: 0, // Disable Telegraf's 90s middleware timeout for long build tasks
-  });
+  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN");
 
   // Bot Middlewares
   bot.use(channelCheckMiddleware);
