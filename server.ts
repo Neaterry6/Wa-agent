@@ -162,10 +162,12 @@ async function startServer() {
     const changes: string[] = [];
     if (/archiver/i.test(errorText)) {
       const targetFile = path.join(process.cwd(), "src/utils/index.ts");
-      const importPatched = patchFile(targetFile, /import\s+archiver\s+from\s+["']archiver["'];?/, 'import * as archiver from "archiver";');
+      const importPatched = patchFile(targetFile, /import\s+\*\s+as\s+archiver\s+from\s+["']archiver["'];?/, 'import archiver from "archiver";');
       const createPatched = patchFile(targetFile, /archiver\.create\(\s*["']zip["']\s*,/g, 'archiver("zip",');
-      if (importPatched) changes.push("patched archiver import in src/utils/index.ts");
+      const defaultCallPatched = patchFile(targetFile, /archiver\.default\(/g, 'archiver(');
+      if (importPatched) changes.push("patched archiver to default import in src/utils/index.ts");
       if (createPatched) changes.push("patched archiver.create() call in src/utils/index.ts");
+      if (defaultCallPatched) changes.push("patched archiver.default() call in src/utils/index.ts");
     }
     if (/permission denied/i.test(errorText)) {
       await ShellUtils.run("chmod -R 755 /home/container/workspaces/Project");
@@ -223,6 +225,7 @@ async function startServer() {
           { pattern: /SyntaxError/i, label: "SyntaxError" },
           { pattern: /Permission denied/i, label: "Permission denied" },
           { pattern: /archiver\.create is not a function/i, label: "archiver" },
+          { pattern: /call-import-namespace/i, label: "archiver" },
         ];
 
         const detected = errorSignals.find((signal) => signal.pattern.test(delta));
@@ -422,13 +425,17 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
   bot.command("adminstats", (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply("❌ Restricted.");
     logger.info(`Admin ${ctx.from.id} viewed stats.`);
-    const stats = `⚙️ *System Stats*
+    (async () => {
+      const rootFiles = await FileUtils.listFiles(process.cwd());
+      const workspaceFiles = fs.existsSync(path.join(process.cwd(), "workspaces")) ? await FileUtils.listFiles(path.join(process.cwd(), "workspaces")) : [];
+      const stats = `⚙️ *System Stats*
 - Users: ${DB.getAllUsers().length}
 - Uptime: ${process.uptime().toFixed(0)}s
 - Memory: ${(process.memoryUsage().rss / 1024 / 1024).toFixed(2)} MB
-- Files: ${FileUtils.listFiles(process.cwd()).length}
-- Workspaces: ${fs.existsSync(path.join(process.cwd(), 'workspaces')) ? FileUtils.listFiles(path.join(process.cwd(), 'workspaces')).length : 0}`;
-    ctx.reply(stats, { parse_mode: 'Markdown' });
+- Files: ${rootFiles.length}
+- Workspaces: ${workspaceFiles.length}`;
+      ctx.reply(stats, { parse_mode: "Markdown" });
+    })().catch(() => ctx.reply("❌ Failed to load stats."));
   });
 
   bot.command("terminal", (ctx) => {
@@ -645,7 +652,7 @@ Created structure, generated code for ${files.length} files, and delivered the z
     if (!owner || !repoName) return ctx.reply("❌ Invalid repo. Use owner/repo.");
 
     const gh = new GitHubService(githubToken);
-    const files = FileUtils.listFiles(state.cwd);
+    const files = await FileUtils.listFiles(state.cwd);
     let count = 0;
     for (const file of files) {
       const fullPath = path.join(state.cwd, file);
@@ -1399,7 +1406,7 @@ ${data.description || 'No description'}`);
 
     try {
       logger.info(`User ${userId} unzipping ${zipPath} to ${workspaceDir}`);
-      FileUtils.unzip(zipPath, workspaceDir);
+      await FileUtils.unzip(zipPath, workspaceDir);
       state.cwd = workspaceDir;
       
       const allPaths = FileUtils.listFilesRecursive(workspaceDir);
@@ -1424,7 +1431,7 @@ ${data.description || 'No description'}`);
     if (!zipPath) return ctx.reply("❌ No ZIP file found.");
     
     try {
-      const list = FileUtils.listZipContent(zipPath);
+      const list = await FileUtils.listZipContent(zipPath);
       const messages = FileUtils.formatPathListForMarkdown(list, "📦 *ZIP Contents*");
       for (const message of messages) {
         await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -1434,11 +1441,11 @@ ${data.description || 'No description'}`);
     }
   });
 
-  bot.command("ls", (ctx) => {
+  bot.command("ls", async (ctx) => {
     const userId = ctx.from!.id;
     const state = getState(userId);
     try {
-      const files = FileUtils.listFiles(state.cwd);
+      const files = await FileUtils.listFiles(state.cwd);
       let text = `📂 *Directory: ${path.basename(state.cwd)}*\n\n`;
       files.forEach(f => {
         const isDir = fs.statSync(path.join(state.cwd, f)).isDirectory();

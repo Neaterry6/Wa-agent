@@ -2,9 +2,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import * as archiver from "archiver";
+import archiver from "archiver";
 import { stat } from "fs/promises";
-import AdmZip from "adm-zip";
 
 const execAsync = promisify(exec);
 
@@ -71,14 +70,20 @@ export class FileUtils {
     });
   }
 
-  static unzip(zipPath: string, targetPath: string) {
-    const zip = new AdmZip(zipPath);
-    zip.extractAllTo(targetPath, true);
+  static async unzip(zipPath: string, targetPath: string) {
+    if (!fs.existsSync(targetPath)) fs.mkdirSync(targetPath, { recursive: true });
+    const escapedZip = JSON.stringify(zipPath);
+    const escapedTarget = JSON.stringify(targetPath);
+    const out = await ShellUtils.run(`unzip -o ${escapedZip} -d ${escapedTarget}`);
+    if (/^Error:/i.test(out)) throw new Error(out);
+    return out;
   }
 
-  static listZipContent(zipPath: string): string[] {
-    const zip = new AdmZip(zipPath);
-    return zip.getEntries().map(e => e.entryName);
+  static async listZipContent(zipPath: string): Promise<string[]> {
+    const escapedZip = JSON.stringify(zipPath);
+    const out = await ShellUtils.run(`unzip -Z1 ${escapedZip}`);
+    if (/^Error:/i.test(out)) throw new Error(out);
+    return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
   static writeFile(filePath: string, content: string) {
@@ -92,9 +97,12 @@ export class FileUtils {
     return fs.readFileSync(filePath, "utf-8");
   }
 
-  static listFiles(dirPath: string): string[] {
+  static async listFiles(dirPath: string): Promise<string[]> {
     if (!fs.existsSync(dirPath)) return [];
-    return fs.readdirSync(dirPath);
+    const escapedDir = JSON.stringify(dirPath);
+    const out = await ShellUtils.run(`ls -1A ${escapedDir}`);
+    if (/^Error:/i.test(out)) throw new Error(out);
+    return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
 
