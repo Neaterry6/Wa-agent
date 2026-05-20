@@ -36,14 +36,15 @@ export class AIEngine {
 
   private static async withFallback(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", preferred: string = "gemini") {
     const fallbackOrder = preferred === "broken"
-      ? ["broken", "gemini", "groq", "qwen"]
-      : [preferred, "gemini", "groq", "qwen"];
+      ? ["broken", "notte", "gemini", "groq", "qwen"]
+      : [preferred, "notte", "gemini", "groq", "qwen"];
     const order = fallbackOrder.filter((v, i, a) => a.indexOf(v) === i);
     const errors: string[] = [];
 
     for (const provider of order) {
       try {
         if (provider === "gemini") return await this.generateGemini(prompt, systemInstruction);
+        if (provider === "notte") return await this.generateNotte(prompt, systemInstruction);
         if (provider === "groq") return await this.generateGroq(this.buildMessages(prompt, history, systemInstruction), config.groqModel);
         if (provider === "qwen") return await this.generateQwen(this.buildMessages(prompt, history, systemInstruction));
         if (provider === "broken") return await this.generateBroken(prompt, history, systemInstruction);
@@ -65,6 +66,32 @@ ${prompt}` : prompt;
 
   static async chat(prompt: string, history: { role: string; content: string }[] = [], systemInstruction: string = "", model: string = "gemini") {
     return this.withFallback(prompt, history, systemInstruction, model);
+  }
+
+  static async generateNotte(prompt: string, systemInstruction: string = "") {
+    if (!config.notteKey) throw new Error("NOTTE_API_KEY missing");
+    const model = /coder|code|program/i.test(systemInstruction)
+      ? config.notteCodeModel
+      : config.notteGeneralModel;
+    const response = await axios.post(
+      `${config.notteBaseUrl.replace(/\/$/, "")}/chat/completions`,
+      {
+        model,
+        messages: [
+          { role: "system", content: systemInstruction || "You are the main AI agent handling search, code, and responses." },
+          { role: "user", content: prompt },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.notteKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    const content = response.data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Notte returned empty response");
+    return content;
   }
 
   static async generateProject(description: string) {
