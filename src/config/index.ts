@@ -22,6 +22,10 @@ export const config = {
   groqBaseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
   qwenKey: process.env.QWEN_API_KEY || "",
   qwenModel: process.env.QWEN_MODEL || "qwen-plus",
+  qwenModels: (process.env.QWEN_MODELS || "qwen/qwen2.5-72b-instruct,qwen/qwen2.5-14b-instruct,qwen/qwen2.5-7b-instruct,qwen/qwen2.5-vision,qwen/qwen-coder-pro,qwen/qwen-code,qwen/qwen-zip")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean),
   qwenBaseUrl: process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   brokenHost: process.env.BROKEN_HOST || "gemini.talkai.info",
   brokenPath: process.env.BROKEN_PATH || "/pt/chat/send/",
