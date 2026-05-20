@@ -2,18 +2,9 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import * as archiver from "archiver";
+import archiver from "archiver";
+import { stat } from "fs/promises";
 import AdmZip from "adm-zip";
-
-const resolveArchiverFactory = () => {
-  const mod: any = archiver;
-  if (typeof mod === "function") return mod;
-  if (typeof mod?.default === "function") return mod.default;
-  if (typeof mod?.create === "function") return mod.create;
-  throw new TypeError("archiverFactory is not a function");
-};
-
-const archiverFactory = resolveArchiverFactory() as (format: string, options?: any) => any;
 
 const execAsync = promisify(exec);
 
@@ -40,16 +31,43 @@ export class ShellUtils {
 
 export class FileUtils {
   static async zipFolder(sourceDir: string, outPath: string) {
+    if (!fs.existsSync(sourceDir)) {
+      throw new Error(`Source directory does not exist: ${sourceDir}`);
+    }
+
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outPath);
-      const archive = archiverFactory("zip", { zlib: { level: 9 } });
+      const archive = archiver("zip", { zlib: { level: 9 } });
+      let settled = false;
 
-      output.on("close", () => resolve(true));
-      archive.on("error", reject);
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+
+      output.on("error", fail);
+      archive.on("error", fail);
+      archive.on("warning", (err: any) => {
+        if (err?.code === "ENOENT") return;
+        fail(err);
+      });
+
+      output.on("close", async () => {
+        if (settled) return;
+        try {
+          const fileStat = await stat(outPath);
+          if (fileStat.size <= 0) return fail(new Error(`Zip archive is empty: ${outPath}`));
+          settled = true;
+          resolve(true);
+        } catch (e: any) {
+          fail(e);
+        }
+      });
 
       archive.pipe(output);
       archive.directory(sourceDir, false);
-      archive.finalize();
+      void archive.finalize();
     });
   }
 
