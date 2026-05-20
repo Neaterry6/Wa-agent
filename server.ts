@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import axios from "axios";
+import AdmZip from "adm-zip";
 import { createServer as createViteServer } from "vite";
 import { Telegraf, Context, Markup, session } from "telegraf";
 import { config } from "./src/config/index.ts";
@@ -175,7 +176,14 @@ async function startServer() {
       changes.push("set TIMEOUT=180000");
     }
     const buildLog = await ShellUtils.run("npm run build");
-    return { changes, buildLog };
+    let restartLog = "";
+    try {
+      restartLog = await ShellUtils.run("pm2 restart bot");
+      changes.push("restarted bot via pm2");
+    } catch {
+      changes.push("pm2 restart skipped (pm2 unavailable)");
+    }
+    return { changes, buildLog, restartLog };
   }
 
   function editZip(zipPath: string, edits: Record<string, string>) {
@@ -191,6 +199,37 @@ async function startServer() {
     const fixedPath = path.join(path.dirname(zipPath), `fixed-${Date.now()}.zip`);
     zip.writeZip(fixedPath);
     return { fixedPath, changedFiles };
+  }
+
+  function watchLogs(logFile: string) {
+    if (!fs.existsSync(logFile)) {
+      logger.warn(`Watchdog skipped. Log file not found: ${logFile}`);
+      return;
+    }
+
+    let lastSize = 0;
+    fs.watchFile(logFile, { interval: 3000 }, async () => {
+      try {
+        const currentContent = fs.readFileSync(logFile, "utf8");
+        const delta = currentContent.slice(lastSize);
+        lastSize = currentContent.length;
+        if (!delta.trim()) return;
+
+        const errorSignals: Array<{ pattern: RegExp; label: string }> = [
+          { pattern: /TimeoutError/i, label: "TimeoutError" },
+          { pattern: /SyntaxError/i, label: "SyntaxError" },
+          { pattern: /Permission denied/i, label: "Permission denied" },
+        ];
+
+        const detected = errorSignals.find((signal) => signal.pattern.test(delta));
+        if (!detected) return;
+
+        logger.warn(`Watchdog detected ${detected.label}; triggering self-heal.`);
+        await selfHeal(detected.label);
+      } catch (error: any) {
+        logger.error(`Watchdog failed: ${error?.message || String(error)}`);
+      }
+    });
   }
 
   const HELP_MENU_IMAGE = "https://cdn.tmp.malvryx.dev/files/mxv_2TnyXIAzL.jpeg";
@@ -1250,11 +1289,12 @@ ${names.map(n => `• ${n}`).join("\n")}`);
     const errorText = ctx.message.text.replace(/^\/heal(@\w+)?/i, "").trim() || "archiver import mismatch";
     await ctx.reply("🔧 Self-healing initiated...");
     try {
-      const { changes, buildLog } = await selfHeal(errorText);
+      const { changes, buildLog, restartLog } = await selfHeal(errorText);
       const summary = changes.length ? changes.join(", ") : "no direct file changes needed";
       await ctx.reply(`✅ Self-heal completed.\nChanges: ${summary}`);
       await sendLongTextResponse(ctx, `Build output:\n${buildLog}`, true);
-      await ctx.reply("♻️ Restart/redeploy to apply all runtime updates.");
+      if (restartLog) await sendLongTextResponse(ctx, `Restart output:\n${restartLog}`, true);
+      await ctx.reply("♻️ Self-heal flow finished.");
     } catch (err: any) {
       await ctx.reply(`❌ Self-heal failed: ${err?.message || String(err)}`);
     }
@@ -1318,7 +1358,7 @@ ${data.description || 'No description'}`);
               state.pendingZipEdit = false;
               await ctx.reply("🛠 Patching ZIP contents...");
               const { fixedPath, changedFiles } = editZip(zipPath, {
-                "dist/server.mjs": "import * as archiver from 'archiver';\n// rest of code...\n"
+                "dist/server.mjs": "import * as archiver from 'archiver';\n"
               });
               await ctx.replyWithDocument({ source: fixedPath, filename: `fixed-${doc.file_name}` });
               await ctx.reply(`✅ ZIP edited and returned. Updated files: ${changedFiles}.`);
@@ -1533,6 +1573,8 @@ ${data.description || 'No description'}`);
     botStatus = "missing_token";
     logger.error("Bot token missing at startup.");
   }
+
+  watchLogs("/home/container/logs/server.log");
 
   // --- VITE MIDDLEWARE ---
   if (process.env.NODE_ENV !== "production") {
