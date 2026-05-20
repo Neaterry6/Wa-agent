@@ -91,7 +91,9 @@ async function startServer() {
   let botError: string | null = null;
   let botInfo: any = null;
 
-  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN");
+  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN", {
+    handlerTimeout: 0, // Disable Telegraf's 90s middleware timeout for long build tasks
+  });
 
   // Bot Middlewares
   bot.use(channelCheckMiddleware);
@@ -170,6 +172,7 @@ You can also send plain text like: git clone <url>, unzip my.zip, or model grog.
 ├─ 🎵 Media
 │  • /play <song>
 │  • /video <query>
+│  • /anivid
 │  • /musicgen or /suno <prompt>
 │  • /ssweb <url> (web screenshot)
 
@@ -191,36 +194,40 @@ You can also send plain text like: git clone <url>, unzip my.zip, or model grog.
 Bot Menu
 User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
 
-You can use commands with "/" OR without prefix.
-Example: "help", "menu", "model grog", "unzip my.zip"
-
-AI + Chat
-• /help or /menu
-• /model qwen|gemini|grog|groq
+Core
+• /start • /help • /menu • /ping
+• /model <gemini|grog|qwen|broken>
 • /setmode roast|helpful|coder|strict
-• /create <prompt>
-• normal chat: just send any message
 
-Dev Tools
-• /search <query>
-• /scrape <url>
-• /run <lang> <code>
+Build + Git
+• /build <prompt> • /create <prompt>
 • /gitclone <repo_url>
 • /gitlookup <repo_url|owner/repo>
 • /gitzip <repo_url|owner/repo>
-• /gitpr <repo_url|owner/repo> <title> | <body>
-• /setgithub <token> <repo_url>
-• /listfiles
-• /readfile <path>
-• /editfile <path> <instructions>
-• /run <lang> <code>
-• /scrape <url>
-• /unzip <zip_path>
+• /push <repo_name>
+• /zipfiles • /unzip <zip_name> • /lszip <zip_name> • /ls
+
+AI + Media
+• /search <query> • /scrape <url> • /run <lang> <code>
+• /qwen <prompt> • /agent <task>
+• /image <prompt>
+• /suno <prompt> • /musicgen <prompt> • /audio <prompt>
+• /play <song>
+• /video <query>
+• /anivid
+• /ssweb <url>
+
+Controls
+• /buttonmode on|off
+• /voicemode on|off (admin)
+• /terminal • /exit
 
 Admin
 • /shell <command>
 • /broadcast <message>
-• /ban <user_id> / /unban <user_id>`;
+• /stats • /users • /logs
+• /ban <user_id> • /unban <user_id>
+• /adminadd <id> • /adminremove <id> • /adminlist`;
   }
 
   async function handleNaturalChat(ctx: Context, text: string) {
@@ -757,7 +764,7 @@ ${chunks.join(' | ')}` : '';
   });
 
   bot.help((ctx) => {
-    return ctx.reply(getHelpText(ctx));
+    return ctx.replyWithPhoto(HELP_MENU_IMAGE, { caption: getHelpText(ctx) });
   });
 
   bot.command("setmode", (ctx) => {
@@ -958,14 +965,23 @@ ${url}` });
   bot.command("video", async (ctx) => {
     const query = ctx.message.text.split(" ").slice(1).join(" ").trim();
     if (!query) return ctx.reply("Usage: /video <query>");
+    const endpoints = [
+      { url: "https://www.googleapis.com/youtube/v3/search", params: { part: "snippet", q: query, type: "video", maxResults: 1, key: process.env.YOUTUBE_API_KEY } },
+      { url: "https://api.duckduckgo.com/", params: { q: `${query} site:youtube.com`, format: "json", no_html: 1, no_redirect: 1 } }
+    ];
     try {
-      const { data } = await axios.get("https://api.duckduckgo.com/", {
-        params: { q: `${query} site:youtube.com`, format: "json", no_html: 1, no_redirect: 1 },
-        timeout: 20000
-      });
-      const first = data?.RelatedTopics?.find?.((x: any) => x?.FirstURL)?.FirstURL;
-      if (!first) return ctx.reply(`No quick video results found for: ${query}`);
-      return ctx.reply(`🎬 Top result for *${query}*\\n${first}`, { parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
+      for (const ep of endpoints) {
+        try {
+          if (ep.url.includes("googleapis") && !process.env.YOUTUBE_API_KEY) continue;
+          const { data } = await axios.get(ep.url, { params: ep.params, timeout: 20000 });
+          let link = "";
+          if (ep.url.includes("googleapis")) link = data?.items?.[0]?.id?.videoId ? `https://www.youtube.com/watch?v=${data.items[0].id.videoId}` : "";
+          else link = data?.RelatedTopics?.find?.((x: any) => x?.FirstURL)?.FirstURL || "";
+          if (link) return ctx.reply(`🎬 Top result for: ${query}
+${link}`, { link_preview_options: { is_disabled: false } });
+        } catch {}
+      }
+      return ctx.reply(`No quick video results found for: ${query}`);
     } catch (e: any) {
       return ctx.reply(`❌ Video search failed: ${e.message}`);
     }
@@ -975,20 +991,27 @@ ${url}` });
     const query = ctx.message.text.split(" ").slice(1).join(" ").trim();
     if (!query) return ctx.reply("Usage: /play <song name>");
     try {
-      const { data } = await axios.get("https://api.popcat.xyz/spotify", {
-        params: { q: query },
-        timeout: 25000
-      });
-      if (!data || data.error) return ctx.reply(`❌ No Spotify result found for: ${query}`);
+      let data: any = null;
+      const endpoints = [
+        { url: "https://api.popcat.xyz/v2/spotify", params: { q: query } },
+        { url: "https://api.popcat.xyz/spotify", params: { q: query } }
+      ];
+      for (const ep of endpoints) {
+        try {
+          const res = await axios.get(ep.url, { params: ep.params, timeout: 25000 });
+          if (res?.data && !res.data.error) { data = res.data; break; }
+        } catch {}
+      }
+      if (!data) return ctx.reply(`❌ No Spotify result found for: ${query}`);
       const title = data.title || query;
       const artist = data.artist || "Unknown";
       const link = data.url || data.link || data.external_urls?.spotify;
       const preview = data.preview || data.preview_url;
       const cover = data.image || data.thumbnail;
-      const caption = `🎵 *${title}*\n👤 ${artist}\n${link ? `🔗 ${link}` : ""}`.trim();
-      if (preview) return ctx.replyWithAudio({ url: preview }, { caption, parse_mode: "Markdown" });
-      if (cover) return ctx.replyWithPhoto({ url: cover }, { caption, parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
-      return ctx.reply(caption, { parse_mode: "Markdown", link_preview_options: { is_disabled: false } });
+      const caption = `🎵 ${title}\n👤 ${artist}\n${link ? `🔗 ${link}` : ""}`.trim();
+      if (preview) return ctx.replyWithAudio({ url: preview }, { caption });
+      if (cover) return ctx.replyWithPhoto({ url: cover }, { caption, link_preview_options: { is_disabled: false } });
+      return ctx.reply(caption, { link_preview_options: { is_disabled: false } });
     } catch (e: any) {
       return ctx.reply(`❌ Spotify command failed: ${e.message}`);
     }
@@ -996,6 +1019,7 @@ ${url}` });
 
   bot.command("anivid", async (ctx) => {
     const sources = [
+      "https://api.waifu.pics/nsfw/waifu",
       "https://arychauhann.onrender.com/api/sfmhentai",
       "https://arychauhann.onrender.com/api/hentai"
     ];
@@ -1003,8 +1027,11 @@ ${url}` });
       for (const source of sources) {
         try {
           const { data } = await axios.get(source, { timeout: 45000, headers: { "User-Agent": "Mozilla/5.0" } });
-          const url = data?.video || data?.url || data?.result?.url || data?.data?.url || data?.data?.video;
-          if (url) return ctx.replyWithVideo({ url }, { caption: `🎬 anivid\nsource: ${source}` });
+          const url = data?.video || data?.url || data?.result?.url || data?.result?.video || data?.data?.url || data?.data?.video;
+          if (url) {
+            if (/\.(mp4|webm|mkv)(\?|$)/i.test(url)) return ctx.replyWithVideo({ url }, { caption: `🎬 anivid\nsource: ${source}` });
+            return ctx.replyWithPhoto({ url }, { caption: `🎴 anime result (image fallback)\nsource: ${source}` });
+          }
         } catch {}
       }
       return ctx.reply("❌ Failed to fetch anime video from API sources.");
