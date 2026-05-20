@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import archiver from "archiver";
+import * as archiver from "archiver";
 import AdmZip from "adm-zip";
 
 const resolveArchiverFactory = () => {
@@ -20,10 +20,20 @@ const execAsync = promisify(exec);
 export class ShellUtils {
   static async run(cmd: string, cwd?: string) {
     try {
-      const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 60000 });
-      return stdout || stderr || "Execution successful (no output).";
+      const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+      const out = (stdout || "").trim();
+      const err = (stderr || "").trim();
+
+      if (out && err) return `${out}\n\n[stderr]\n${err}`;
+      if (out) return out;
+      if (err) return `[stderr]\n${err}`;
+      return "Execution successful (no output).";
     } catch (e: any) {
-      return `Error: ${e.message}`;
+      const out = (e?.stdout || "").toString().trim();
+      const err = (e?.stderr || "").toString().trim();
+      const details = [out, err].filter(Boolean).join("\n\n[stderr]\n");
+      const message = e?.killed ? "Command timed out." : (e?.message || "Command failed.");
+      return `Error: ${message}${details ? `\n\n${details}` : ""}`;
     }
   }
 }

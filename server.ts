@@ -449,9 +449,11 @@ Created structure, generated code for ${files.length} files, and delivered the z
   }
 
   async function executeShell(ctx: Context, cmd: string) {
-    const msg = await ctx.reply(`🐚 \`[TERMINAL]\` $ ${cmd}\n\nRunning...`, { parse_mode: 'Markdown' });
-    const output = await ShellUtils.run(cmd);
-    await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🐚 \`[TERMINAL]\` $ ${cmd}\n\n\`\`\`\n${output.slice(0, 3900)}\n\`\`\``, { parse_mode: 'Markdown' });
+    const state = getState(ctx.from!.id);
+    const cwd = state.cwd || process.cwd();
+    const msg = await ctx.reply(`🐚 \`[TERMINAL]\` $ ${cmd}\n📁 cwd: \`${cwd}\`\n\nRunning...`, { parse_mode: 'Markdown' });
+    const output = await ShellUtils.run(cmd, cwd);
+    await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🐚 \`[TERMINAL]\` $ ${cmd}\n📁 cwd: \`${cwd}\`\n\n\`\`\`\n${output.slice(0, 3800)}\n\`\`\``, { parse_mode: 'Markdown' });
   }
 
   async function cloneRepoToWorkspace(ctx: Context, repoUrl: string) {
