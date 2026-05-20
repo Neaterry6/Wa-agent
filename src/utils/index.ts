@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import archiver from "archiver";
+import * as archiverNs from "archiver";
 import { stat } from "fs/promises";
 
 const execAsync = promisify(exec);
@@ -36,7 +36,8 @@ export class FileUtils {
 
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outPath);
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const archiverFactory = (archiverNs as any).default ?? (archiverNs as any).create ?? archiverNs;
+      const archive = archiverFactory("zip", { zlib: { level: 9 } });
       let settled = false;
 
       const fail = (err: Error) => {
