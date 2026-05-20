@@ -162,12 +162,12 @@ async function startServer() {
     const changes: string[] = [];
     if (/archiver/i.test(errorText)) {
       const targetFile = path.join(process.cwd(), "src/utils/index.ts");
-      const importPatched = patchFile(targetFile, /import\s+\*\s+as\s+archiver\s+from\s+["']archiver["'];?/, 'import archiver from "archiver";');
-      const createPatched = patchFile(targetFile, /archiver\.create\(\s*["']zip["']\s*,/g, 'archiver("zip",');
-      const defaultCallPatched = patchFile(targetFile, /archiver\.default\(/g, 'archiver(');
-      if (importPatched) changes.push("patched archiver to default import in src/utils/index.ts");
-      if (createPatched) changes.push("patched archiver.create() call in src/utils/index.ts");
-      if (defaultCallPatched) changes.push("patched archiver.default() call in src/utils/index.ts");
+      const importPatched = patchFile(targetFile, /import\s+archiver\s+from\s+["']archiver["'];?/, 'import * as archiverNs from "archiver";');
+      const createPatched = patchFile(targetFile, /const\s+archive\s*=\s*archiver\(\s*["']zip["']\s*,/g, 'const archiverFactory = (archiverNs as any).default ?? (archiverNs as any).create ?? archiverNs;\n      const archive = archiverFactory("zip",');
+      const defaultCallPatched = patchFile(targetFile, /const\s+archive\s*=\s*archiver\.default\(/g, 'const archiverFactory = (archiverNs as any).default ?? (archiverNs as any).create ?? archiverNs;\n      const archive = archiverFactory(');
+      if (importPatched) changes.push("patched archiver to namespace import in src/utils/index.ts");
+      if (createPatched) changes.push("patched archiver() call to compatibility factory in src/utils/index.ts");
+      if (defaultCallPatched) changes.push("patched archiver.default() call to compatibility factory in src/utils/index.ts");
     }
     if (/permission denied/i.test(errorText)) {
       await ShellUtils.run("chmod -R 755 /home/container/workspaces/Project");
