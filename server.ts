@@ -99,7 +99,7 @@ async function startServer() {
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
   const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean; pendingZipEdit?: boolean }>();
-  const whitelistPath = path.join(process.cwd(), "storage", "allowed-users.json");
+  const whitelistPath = path.join(process.cwd(), "whitelist.json");
   if (!fs.existsSync(path.dirname(whitelistPath))) fs.mkdirSync(path.dirname(whitelistPath), { recursive: true });
   const loadAllowedUsers = () => {
     if (!fs.existsSync(whitelistPath)) return new Set<string>();
@@ -271,11 +271,11 @@ async function startServer() {
     return `🌲 BrokenVzn Agent — Command Tree
 
 Use / prefix for slash commands.
-You can also send plain text like: git clone <url>, unzip my.zip, or model grog.
+You can also send plain text like: git clone <url>, unzip my.zip, or model notte.
 
 ├─ 🤖 AI Core
 │  • /help • /menu
-│  • /model <gemini|grog|qwen|broken>
+│  • /model <notte>
 │  • /setmode <roast|helpful|coder|strict>
 │  • /transcribe (voice note → text)
 │  • /tts [voice] <text>
@@ -313,7 +313,7 @@ User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
 
 Core
 • /start • /help • /menu • /ping
-• /model <gemini|grog|qwen|broken>
+• /model <notte>
 • /setmode roast|helpful|coder|strict
 
 Build + Git
@@ -326,7 +326,7 @@ Build + Git
 
 AI + Media
 • /search <query> • /scrape <url> • /run <lang> <code>
-• /qwen <prompt> • /agent <task>
+• /agent <task>
 • /image <prompt>
 • /suno <prompt> • /musicgen <prompt> • /audio <prompt>
 • /play <song>
@@ -487,15 +487,11 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
 
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    const aliases: Record<string, string> = { notte: "notte", gemini: "gemini", groq: "groq", grog: "groq", qwen: "qwen", broken: "broken" };
-    const model = aliases[rawArg];
-    if (!model) {
-      return ctx.reply("Usage: /model notte | gemini | grog | qwen | broken (alias: groq)");
-    }
+    if (rawArg && rawArg !== "notte") return ctx.reply("Only Notte AI is enabled.");
     const state = getState(ctx.from!.id);
-    state.model = model;
-    DB.updateModel(ctx.from!.id, model);
-    ctx.reply(`✅ Chat model switched to: *${model.toUpperCase()}*`, { parse_mode: 'Markdown' });
+    state.model = "notte";
+    DB.updateModel(ctx.from!.id, "notte");
+    ctx.reply("✅ Active model/provider: *NOTTE AI*", { parse_mode: 'Markdown' });
   });
 
   bot.command("broadcast", async (ctx) => {
@@ -1004,13 +1000,7 @@ ${chunks.join(' | ')}` : '';
   });
 
 
-  bot.command("qwen", async (ctx) => {
-      const prompt = ctx.message.text.split(" ").slice(1).join(" ");
-      if (!prompt) return ctx.reply("Usage: /qwen <prompt>");
-      ctx.reply("📖 Consulting Qwen Knowledge...");
-      const res = await AIEngine.generateQwen(prompt);
-      ctx.reply(res);
-  });
+  bot.command("qwen", async (ctx) => ctx.reply("Qwen removed. Notte AI is the only provider."));
 
 
 
@@ -1339,10 +1329,21 @@ ${names.map(n => `• ${n}`).join("\n")}`);
     return ctx.reply(`🚫 User ${userId} rejected.`);
   });
 
+
+  bot.command("listusers", (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("❌ Admin only.");
+    const users = [...allowedUsers];
+    return ctx.reply(users.length ? `✅ Whitelisted IDs:
+${users.map((id) => `• ${id}`).join("\n")}` : "No whitelisted users.");
+  });
+
   bot.command("status", async (ctx) => {
-    const userId = ctx.from?.id;
-    const state = userId ? getState(userId) : null;
-    return ctx.reply(`📊 Bot is running.\nMain AI: Notte\nFallbacks: Qwen, Gemini, Groq\nCurrent model: ${state?.model || "notte"}\nWhitelisted users: ${allowedUsers.size}`);
+    const health = botStatus === "running" ? "running" : "failed";
+    const aiStatus = await AIEngine.chat("Report current AI provider status", [], "Respond in one concise line about active provider.");
+    return ctx.reply(`📊 Bot health: ${health}
+Active AI provider: Notte AI
+Provider check: ${aiStatus}
+Whitelisted users: ${allowedUsers.size}`);
   });
 
   bot.command("ask", async (ctx) => {
@@ -1360,6 +1361,25 @@ ${names.map(n => `• ${n}`).join("\n")}`);
     const reply = await AIEngine.chat(task, [], "You are the main AI agent handling coding tasks. Return clean code and concise explanations.", "notte");
     return sendLongTextResponse(ctx, normalizeModelReply(reply));
   });
+
+
+  bot.command("translate", async (ctx) => {
+    const args = ctx.message.text.replace(/^\/translate(@\w+)?/i, "").trim();
+    const [lang, ...rest] = args.split(" ");
+    if (!lang || !rest.length) return ctx.reply("Usage: /translate <lang> <text>");
+    return sendLongTextResponse(ctx, await AIEngine.chat(rest.join(" "), [], `Translate to ${lang}. Return only translated text.`));
+  });
+  bot.command("summarize", async (ctx) => sendLongTextResponse(ctx, await AIEngine.chat(ctx.message.text.replace(/^\/summarize(@\w+)?/i, "").trim(), [], "Summarize concisely.")));
+  bot.command("health", async (ctx) => sendLongTextResponse(ctx, await AIEngine.chat(ctx.message.text.replace(/^\/health(@\w+)?/i, "").trim(), [], "Provide general informational medical guidance with disclaimer.")));
+  bot.command("coupon", async (ctx) => sendLongTextResponse(ctx, await AIEngine.chat(ctx.message.text.replace(/^\/coupon(@\w+)?/i, "").trim(), [], "Provide current coupon-finding tips and deal sources.")));
+  bot.command("flight", async (ctx) => sendLongTextResponse(ctx, await AIEngine.chat(ctx.message.text.replace(/^\/flight(@\w+)?/i, "").trim(), [], "Provide flight search guidance and best route options.")));
+  bot.command("encrypt", async (ctx) => { const crypto = await import("crypto"); const txt = ctx.message.text.replace(/^\/encrypt(@\w+)?/i, "").trim(); const key = (process.env.ENCRYPTION_KEY || "").padEnd(32, "0").slice(0, 32); const iv = crypto.randomBytes(16); const c = crypto.createCipheriv("aes-256-cbc", Buffer.from(key), iv); const e = Buffer.concat([c.update(txt, "utf8"), c.final()]); return ctx.reply(`${iv.toString("hex")}:${e.toString("hex")}`); });
+  bot.command("decrypt", async (ctx) => { const crypto = await import("crypto"); const txt = ctx.message.text.replace(/^\/decrypt(@\w+)?/i, "").trim(); const [ivHex, dataHex] = txt.split(":"); const key = (process.env.ENCRYPTION_KEY || "").padEnd(32, "0").slice(0, 32); const d = crypto.createDecipheriv("aes-256-cbc", Buffer.from(key), Buffer.from(ivHex, "hex")); const out = Buffer.concat([d.update(Buffer.from(dataHex, "hex")), d.final()]).toString("utf8"); return ctx.reply(out); });
+  bot.command("encode", (ctx) => ctx.reply(Buffer.from(ctx.message.text.replace(/^\/encode(@\w+)?/i, "").trim(), "utf8").toString("base64")));
+  bot.command("decode", (ctx) => ctx.reply(Buffer.from(ctx.message.text.replace(/^\/decode(@\w+)?/i, "").trim(), "base64").toString("utf8")));
+  bot.command("yt", async (ctx) => sendLongTextResponse(ctx, await AIEngine.chat(ctx.message.text.replace(/^\/yt(@\w+)?/i, "").trim(), [], "Return a likely YouTube result URL only if known; otherwise explain how to find.")));
+  bot.command("stream", async (ctx) => ctx.reply("/stream acknowledged. Direct streaming depends on Telegram/media source constraints."));
+  bot.command("restart", async (ctx) => { if (!isAdmin(ctx)) return ctx.reply("❌ Admin only."); const out = await ShellUtils.run("pm2 restart bot"); return sendLongTextResponse(ctx, out, true); });
 
   bot.command("heal", async (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply("❌ Restricted. Admin only.");
@@ -1521,6 +1541,34 @@ ${data.description || 'No description'}`);
     } catch (e: any) {
       ctx.reply("❌ Error listing files.");
     }
+  });
+
+
+  bot.command("zip", async (ctx) => {
+    const state = getState(ctx.from!.id);
+    const out = path.join(process.cwd(), `workspace-${Date.now()}.zip`);
+    await FileUtils.zip(state.cwd, out);
+    return ctx.replyWithDocument({ source: fs.createReadStream(out), filename: path.basename(out) });
+  });
+
+  bot.command("upload", async (ctx) => ctx.reply("Send a file as a Telegram document and it will be saved server-side."));
+
+  bot.command("download", async (ctx) => {
+    const name = (ctx.message.text.split(" ")[1] || "").trim();
+    if (!name) return ctx.reply("Usage: /download <filename>");
+    const state = getState(ctx.from!.id);
+    const file = path.join(state.cwd, name);
+    if (!fs.existsSync(file)) return ctx.reply("File not found.");
+    return ctx.replyWithDocument({ source: fs.createReadStream(file), filename: path.basename(file) });
+  });
+
+  bot.command("media", async (ctx) => {
+    const type = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
+    const mediaDir = path.join(process.cwd(), "storage", "media", type);
+    if (!fs.existsSync(mediaDir)) return ctx.reply("No media for that type.");
+    const files = fs.readdirSync(mediaDir);
+    if (!files.length) return ctx.reply("No media stored.");
+    return ctx.replyWithDocument({ source: fs.createReadStream(path.join(mediaDir, files[0])), filename: files[0] });
   });
 
   bot.command("hostren", async (ctx) => {
