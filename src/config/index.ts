@@ -15,18 +15,6 @@ export const config = {
   botToken: botToken,
   botId,
   adminIds: adminIdsRaw.split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
-  geminiKey: process.env.GEMINI_API_KEY || "",
-  geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
-  groqKey: process.env.GROQ_API_KEY || "",
-  groqModel: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-  groqBaseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
-  qwenKey: process.env.QWEN_API_KEY || "",
-  qwenModel: process.env.QWEN_MODEL || "qwen-plus",
-  qwenModels: (process.env.QWEN_MODELS || "qwen/qwen2.5-72b-instruct,qwen/qwen2.5-14b-instruct,qwen/qwen2.5-7b-instruct,qwen/qwen2.5-vision,qwen/qwen-coder-pro,qwen/qwen-code,qwen/qwen-zip")
-    .split(",")
-    .map((name) => name.trim())
-    .filter(Boolean),
-  qwenBaseUrl: process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   notteKey: process.env.NOTTE_API_KEY || "",
   notteBaseUrl: process.env.NOTTE_BASE_URL || "https://anything.notte.cc/api/v1",
   notteGeneralModel: process.env.NOTTE_GENERAL_MODEL || "notte-general",
