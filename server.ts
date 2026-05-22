@@ -1677,31 +1677,35 @@ ${data.description || 'No description'}`);
     }
   });
 
-  // Start Bot
-  if (config.botToken) {
-      bot.launch()
-        .then(async () => {
-          botStatus = "live";
-          botInfo = await bot.telegram.getMe();
-          logger.info(`BrokenVzn Bot is live as @${botInfo.username}`);
-          console.log("BrokenVzn Bot is live as", botInfo.username);
-        })
-        .catch(err => {
-          botStatus = "failed";
-          const message = err instanceof Error ? err.message : String(err);
-          const looksLikeInvalidToken = /(?:ETELEGRAM:\s*)?(401|Unauthorized)/i.test(message);
-          botError = looksLikeInvalidToken
-            ? `${message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
-            : message;
-          logger.error(`Bot launch failed: ${botError}`);
-          if (looksLikeInvalidToken) {
-            logger.error("Verify TELEGRAM_BOT_TOKEN in your .env matches the token from @BotFather and restart the server.");
-          }
-          console.error("Bot launch failed:", err);
-        });
+  // Start Telegram bot only when explicitly enabled.
+  const telegramEnabled = String(process.env.ENABLE_TELEGRAM || "false").toLowerCase() === "true";
+  if (!telegramEnabled) {
+    botStatus = "disabled";
+    logger.info("Telegram bot startup skipped (ENABLE_TELEGRAM=false). Use npm run start:wa for WhatsApp.");
+  } else if (config.botToken) {
+    bot.launch()
+      .then(async () => {
+        botStatus = "live";
+        botInfo = await bot.telegram.getMe();
+        logger.info(`BrokenVzn Bot is live as @${botInfo.username}`);
+        console.log("BrokenVzn Bot is live as", botInfo.username);
+      })
+      .catch(err => {
+        botStatus = "failed";
+        const message = err instanceof Error ? err.message : String(err);
+        const looksLikeInvalidToken = /(?:ETELEGRAM:\s*)?(401|Unauthorized)/i.test(message);
+        botError = looksLikeInvalidToken
+          ? `${message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
+          : message;
+        logger.error(`Bot launch failed: ${botError}`);
+        if (looksLikeInvalidToken) {
+          logger.error("Verify TELEGRAM_BOT_TOKEN in your .env matches the token from @BotFather and restart the server.");
+        }
+        console.error("Bot launch failed:", err);
+      });
   } else {
     botStatus = "missing_token";
-    logger.error("Bot token missing at startup.");
+    logger.error("ENABLE_TELEGRAM=true but TELEGRAM_BOT_TOKEN is missing.");
   }
 
   watchLogs("/home/container/logs/server.log");
