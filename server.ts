@@ -357,11 +357,11 @@ async function startServer() {
     return `🌲 BrokenVzn Agent — Command Tree
 
 Use / prefix for slash commands.
-You can also send plain text like: git clone <url>, unzip my.zip, or model gemini.
+You can also send plain text like: git clone <url>, unzip my.zip, or model external.
 
 ├─ 🤖 AI Core
 │  • /help • /menu
-│  • /model <gemini|groq>
+│  • /model <auto|external|toolbot|claude|groq>
 │  • /setmode <roast|helpful|coder|strict>
 │  • /transcribe (voice note → text)
 │  • /tts [voice] <text>
@@ -399,7 +399,7 @@ User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
 
 Core
 • /start • /help • /menu • /ping
-• /model <gemini|groq>
+• /model <auto|external|toolbot|claude|groq>
 • /setmode roast|helpful|coder|strict
 
 Build + Git
@@ -605,7 +605,7 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
 
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    if (rawArg && !["auto", "gemini", "groq"].includes(rawArg)) return ctx.reply("Usage: /model <auto|gemini|groq>");
+    if (rawArg && !["auto", "groq", "external", "toolbot", "claude"].includes(rawArg)) return ctx.reply("Usage: /model <auto|groq|external|toolbot|claude>");
     const state = getState(ctx.from!.id);
     state.model = rawArg || "auto";
     DB.updateModel(ctx.from!.id, state.model);
@@ -786,9 +786,12 @@ Created structure, generated code for ${files.length} files, and delivered the z
   async function pushWorkspaceToGithub(ctx: Context, repoInput: string, githubToken: string) {
     const userId = ctx.from!.id;
     const state = getState(userId);
+
+    const isLikelyLogMessage = (value: string) => /execution successful|no output|error|failed|warning|\[terminal\]/i.test(value);
+
     const resolveWorkspaceForPush = () => {
       const current = (state.cwd || "").trim();
-      if (current && fs.existsSync(current) && fs.statSync(current).isDirectory()) return current;
+      if (current && !isLikelyLogMessage(current) && fs.existsSync(current) && fs.statSync(current).isDirectory()) return current;
 
       const userPrefix = `${userId}_`;
       const workspaceCandidates = fs.existsSync(telegramWorkspacesDir)
@@ -814,26 +817,57 @@ Created structure, generated code for ${files.length} files, and delivered the z
     };
 
     const workspaceDir = resolveWorkspaceForPush();
-    const repoSlug = repoInput.replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/,"");
+    const repoSlug = repoInput.replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/,""
+    );
     if (!repoSlug.includes("/")) return ctx.reply("❌ Invalid repo. Use owner/repo or full GitHub URL.");
     const [owner, repoName] = repoSlug.split("/");
     if (!owner || !repoName) return ctx.reply("❌ Invalid repo. Use owner/repo.");
 
     const gh = new GitHubService(githubToken);
     const files = await FileUtils.listFiles(workspaceDir);
+    const invalidEntries: string[] = [];
     let count = 0;
+
     for (const file of files) {
-      const fullPath = path.join(workspaceDir, file);
-      if (fs.statSync(fullPath).isFile()) {
-        const content = FileUtils.readFile(fullPath);
-        if (content) {
-          await gh.uploadFile(owner, repoName, file, content);
-          count++;
-        }
+      const candidate = String(file || "").trim();
+      if (!candidate || isLikelyLogMessage(candidate)) {
+        invalidEntries.push(candidate || "(empty)");
+        continue;
       }
+
+      const normalizedRelPath = path.normalize(candidate).replace(/^([.][.][\/])+/, "");
+      if (!normalizedRelPath || path.isAbsolute(normalizedRelPath) || normalizedRelPath.startsWith("..")) {
+        invalidEntries.push(candidate);
+        continue;
+      }
+
+      const fullPath = path.join(workspaceDir, normalizedRelPath);
+      if (!fullPath.startsWith(path.resolve(workspaceDir))) {
+        invalidEntries.push(candidate);
+        continue;
+      }
+
+      if (!fs.existsSync(fullPath)) {
+        invalidEntries.push(candidate);
+        continue;
+      }
+
+      const stat = fs.statSync(fullPath);
+      if (!stat.isFile()) continue;
+
+      const content = FileUtils.readFile(fullPath);
+      if (typeof content !== "string" || content.length === 0) continue;
+
+      await gh.uploadFile(owner, repoName, normalizedRelPath, content);
+      count++;
     }
+
+    if (invalidEntries.length) {
+      logger.warn(`Skipped ${invalidEntries.length} invalid workspace entries for user ${userId}: ${invalidEntries.slice(0, 10).join(", ")}`);
+    }
+
     DB.updateGithub(userId, githubToken, owner);
-    return ctx.reply(`✅ *Push Successful*\n\nUploaded ${count} files to https://github.com/${owner}/${repoName}`, { parse_mode: "Markdown", link_preview_options: { is_disabled: true } });
+    return ctx.reply(`✅ *Push Successful*\n\nUploaded ${count} files to https://github.com/${owner}/${repoName}${invalidEntries.length ? `\nSkipped invalid entries: ${invalidEntries.length}` : ""}`, { parse_mode: "Markdown", link_preview_options: { is_disabled: true } });
   }
 
   async function searchFiles(ctx: Context, query: string) {
@@ -997,7 +1031,7 @@ ${chunks.join(' | ')}` : '';
       "help", "menu", "build", "create", "unzip", "lszip", "zipfiles", "model", "setmode", "play", "video", "ssweb",
       "musicgen", "suno", "transcribe", "tts", "buttonmode", "voicemode", "search", "terminal", "exit", "shell",
       "createapp", "scrape", "run", "agent", "qwen", "audio", "image", "anivid", "ping", "github", "adminadd",
-      "adminremove", "adminlist", "cmd", "push", "accept", "reject", "listusers", "status", "ask", "code", "gemini",
+      "adminremove", "adminlist", "cmd", "push", "accept", "reject", "listusers", "status", "ask", "code",
       "groq", "translate", "summarize", "health", "coupon", "flight", "encrypt", "decrypt", "encode", "decode", "yt",
       "stream", "restart", "heal", "editzip", "gitclone", "gitlookup", "gitzip", "ls", "zip", "upload", "download",
       "media", "hostren", "broadcast", "stats", "users", "logs", "ban", "unban", "adminusers", "adminstats"
@@ -1166,7 +1200,7 @@ Approve app creation? Reply with "yes" or "no".`);
     await pushUpdate(`Goal received: ${goal}`);
     await pushUpdate("Step 1/4: Creating execution plan...");
     const planPrompt = `Break this goal into 4-7 concrete executable steps for a coding agent. Goal: ${goal}`;
-    const plan = await AIEngine.chat(planPrompt, [], "Return short numbered steps only.", "gemini");
+    const plan = await AIEngine.chat(planPrompt, [], "Return short numbered steps only.", "auto");
     await sendLongTextResponse(ctx, `🧭 Execution Plan\n\n${plan}`);
 
     await pushUpdate("Step 2/4: Capturing context and memory...");
@@ -1174,7 +1208,7 @@ Approve app creation? Reply with "yes" or "no".`);
     await pushUpdate(`Loaded ${history.length} recent memory items.`);
 
     await pushUpdate("Step 3/4: Selecting tools for next action...");
-    const toolHint = await AIEngine.chat(`Given this goal, choose ONE immediate tool action to start with: shell|scrape|sandbox|chat. Goal: ${goal}`, history, "Answer with one word.", "gemini");
+    const toolHint = await AIEngine.chat(`Given this goal, choose ONE immediate tool action to start with: shell|scrape|sandbox|chat. Goal: ${goal}`, history, "Answer with one word.", "auto");
     await pushUpdate(`Selected tool path: ${toolHint.trim()}`);
 
     await pushUpdate("Step 4/4: Checkpoint reached. Waiting for your go-ahead before execution.");
@@ -1542,13 +1576,6 @@ Whitelisted users: ${allowedUsers.size}`);
     if (!task) return ctx.reply("Usage: /code <task>");
     await ctx.reply("💻 Coding with Gemini/Groq...");
     const reply = await AIEngine.chat(task, [], "You are the main AI agent handling coding tasks. Return clean code and concise explanations.", "auto");
-    return sendLongTextResponse(ctx, normalizeModelReply(reply));
-  });
-
-  bot.command("gemini", async (ctx) => {
-    const prompt = ctx.message.text.replace(/^\/gemini(@\w+)?/i, "").trim();
-    if (!prompt) return ctx.reply("Usage: /gemini <prompt>");
-    const reply = await AIEngine.chat(prompt, [], "You are Gemini-mode assistant.", "gemini");
     return sendLongTextResponse(ctx, normalizeModelReply(reply));
   });
 
