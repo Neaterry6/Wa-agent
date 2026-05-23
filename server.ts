@@ -88,6 +88,15 @@ async function startServer() {
   const PORT = config.port;
   app.use(express.json({ limit: "15mb" }));
 
+  const telegramWorkspaceRoot = process.env.TELEGRAM_WORKSPACE_ROOT || path.join(process.cwd(), "telegram_workspace");
+  const telegramWorkspacesDir = path.join(telegramWorkspaceRoot, "workspaces");
+  const telegramStorageDir = path.join(telegramWorkspaceRoot, "storage");
+  const telegramBuildsDir = path.join(telegramWorkspaceRoot, "builds");
+  fs.mkdirSync(telegramWorkspaceRoot, { recursive: true });
+  fs.mkdirSync(telegramWorkspacesDir, { recursive: true });
+  fs.mkdirSync(telegramStorageDir, { recursive: true });
+  fs.mkdirSync(telegramBuildsDir, { recursive: true });
+
   let botStatus = "initializing";
   let botError: string | null = null;
   let botInfo: any = null;
@@ -99,7 +108,7 @@ async function startServer() {
   
   // Custom Session Storage (Simple Map for demo, could be persistent)
   const userStates = new Map<number, { model: string; mode: string; cwd: string; isTerminal: boolean; buttonMode: boolean; voiceAiMode: boolean; lastZip?: string; zips: Record<string, string>; clonedRepo?: string; pendingGithubPush?: boolean; pendingBuildDescription?: string; pendingDeployZip?: string; pendingDeployDir?: string; pendingTechStackOnly?: boolean; pendingZipEdit?: boolean }>();
-  const whitelistPath = path.join(process.cwd(), "whitelist.json");
+  const whitelistPath = path.join(telegramWorkspaceRoot, "whitelist.json");
   if (!fs.existsSync(path.dirname(whitelistPath))) fs.mkdirSync(path.dirname(whitelistPath), { recursive: true });
   const loadAllowedUsers = () => {
     if (!fs.existsSync(whitelistPath)) return new Set<string>();
@@ -117,7 +126,7 @@ async function startServer() {
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'notte', mode: 'roast', cwd: process.cwd(), isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
+      userStates.set(userId, { model: 'notte', mode: 'roast', cwd: telegramWorkspacesDir, isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
     }
     return userStates.get(userId)!;
   }
@@ -453,7 +462,7 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
     logger.info(`Admin ${ctx.from.id} viewed stats.`);
     (async () => {
       const rootFiles = await FileUtils.listFiles(process.cwd());
-      const workspaceFiles = fs.existsSync(path.join(process.cwd(), "workspaces")) ? await FileUtils.listFiles(path.join(process.cwd(), "workspaces")) : [];
+      const workspaceFiles = fs.existsSync(telegramWorkspacesDir) ? await FileUtils.listFiles(telegramWorkspacesDir) : [];
       const stats = `⚙️ *System Stats*
 - Users: ${DB.getAllUsers().length}
 - Uptime: ${process.uptime().toFixed(0)}s
@@ -535,7 +544,7 @@ Return output in explicit multi-file format that can be parsed:
 
       await bot.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `🏗 *Project Construction Started*
 2/4 Creating directories and files...`, { parse_mode: 'Markdown' });
-      const buildDir = path.join(process.cwd(), "builds", `prj_${Date.now()}`);
+      const buildDir = path.join(telegramBuildsDir, `prj_${Date.now()}`);
       fs.mkdirSync(buildDir, { recursive: true });
 
       for (let i = 0; i < files.length; i++) {
@@ -584,7 +593,7 @@ Created structure, generated code for ${files.length} files, and delivered the z
     const userId = ctx.from!.id;
     const state = getState(userId);
     const name = (repoUrl.split('/').pop() || 'repo').replace(/\.git$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const target = path.join(process.cwd(), "workspaces", `${userId}_${name}_${Date.now()}`);
+    const target = path.join(telegramWorkspacesDir, `${userId}_${name}_${Date.now()}`);
     const out = await ShellUtils.run(`git clone ${repoUrl} "${target}"`);
     if (out.toLowerCase().includes("error")) return ctx.reply(`❌ Clone failed\n${out}`);
     state.cwd = target;
@@ -628,7 +637,7 @@ Created structure, generated code for ${files.length} files, and delivered the z
   async function cloneAndMergeRepos(ctx: Context, repoUrls: string[]) {
     const userId = ctx.from!.id;
     const state = getState(userId);
-    const mergeRoot = path.join(process.cwd(), "workspaces", `merge_${userId}_${Date.now()}`);
+    const mergeRoot = path.join(telegramWorkspacesDir, `merge_${userId}_${Date.now()}`);
     fs.mkdirSync(mergeRoot, { recursive: true });
     await ctx.reply(`🧩 Starting multi-repo flow for ${repoUrls.length} repositories...`, { parse_mode: 'Markdown' });
 
@@ -1440,7 +1449,7 @@ ${data.description || 'No description'}`);
             const link = await bot.telegram.getFileLink(doc.file_id);
             const response = await axios.get(link.href, { responseType: 'arraybuffer' });
             
-            const storageDir = path.join(process.cwd(), "storage", userId.toString());
+            const storageDir = path.join(telegramStorageDir, userId.toString());
             if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
             
             const ext = path.extname(doc.file_name || ".zip");
@@ -1487,7 +1496,7 @@ ${data.description || 'No description'}`);
       return ctx.reply("❌ No ZIP uploaded recently or file missing.");
     }
 
-    const workspaceDir = path.join(process.cwd(), "workspaces", `${userId}_${Date.now()}`);
+    const workspaceDir = path.join(telegramWorkspacesDir, `${userId}_${Date.now()}`);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     try {
@@ -1546,7 +1555,7 @@ ${data.description || 'No description'}`);
 
   bot.command("zip", async (ctx) => {
     const state = getState(ctx.from!.id);
-    const out = path.join(process.cwd(), `workspace-${Date.now()}.zip`);
+    const out = path.join(telegramWorkspaceRoot, `workspace-${Date.now()}.zip`);
     await FileUtils.zip(state.cwd, out);
     return ctx.replyWithDocument({ source: fs.createReadStream(out), filename: path.basename(out) });
   });
@@ -1564,7 +1573,7 @@ ${data.description || 'No description'}`);
 
   bot.command("media", async (ctx) => {
     const type = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    const mediaDir = path.join(process.cwd(), "storage", "media", type);
+    const mediaDir = path.join(telegramStorageDir, "media", type);
     if (!fs.existsSync(mediaDir)) return ctx.reply("No media for that type.");
     const files = fs.readdirSync(mediaDir);
     if (!files.length) return ctx.reply("No media stored.");
@@ -1575,7 +1584,7 @@ ${data.description || 'No description'}`);
     const userId = ctx.from!.id;
     const state = getState(userId);
     
-    if (state.cwd === process.cwd()) {
+    if (state.cwd === telegramWorkspacesDir) {
       return ctx.reply("❌ You must be in a project workspace to deploy. (Use /unzip)");
     }
 
@@ -1677,11 +1686,11 @@ ${data.description || 'No description'}`);
     }
   });
 
-  // Start Telegram bot only when explicitly enabled.
-  const telegramEnabled = String(process.env.ENABLE_TELEGRAM || "false").toLowerCase() === "true";
+  // Start Telegram bot by default. Set ENABLE_TELEGRAM=false to disable explicitly.
+  const telegramEnabled = String(process.env.ENABLE_TELEGRAM || "true").toLowerCase() === "true";
   if (!telegramEnabled) {
     botStatus = "disabled";
-    logger.info("Telegram bot startup skipped (ENABLE_TELEGRAM=false). Use npm run start:wa for WhatsApp.");
+    logger.info("Telegram bot startup skipped (ENABLE_TELEGRAM=false).");
   } else if (config.botToken) {
     bot.launch()
       .then(async () => {
@@ -1705,7 +1714,8 @@ ${data.description || 'No description'}`);
       });
   } else {
     botStatus = "missing_token";
-    logger.error("ENABLE_TELEGRAM=true but TELEGRAM_BOT_TOKEN is missing.");
+    botError = "TELEGRAM_BOT_TOKEN is missing. Add it to .env and restart the server.";
+    logger.error(botError);
   }
 
   watchLogs("/home/container/logs/server.log");
