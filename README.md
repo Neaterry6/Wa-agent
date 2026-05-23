@@ -1,23 +1,25 @@
-# Axon Telegram Terminal Bot
+# Axon Telegram AI Worker Bot
 
-Simple Telegram bot (no agent orchestration):
-- Replies to normal text from everyone (no prefix needed)
-- Blunt/rude style responses (still useful)
-- Gemini chat (`/ai` and normal text)
-- Groq chat (`/grok`)
-- Admin shell (`/shell`) for git/terminal commands
-- Zip support: upload, list, unzip, re-zip, and send back to Telegram chat
-- Can generate and send scripts from plain text requests
+AI-first Telegram bot where admin can ask naturally and the bot executes terminal/git/media/screenshot/image tasks itself.
+
+## Core abilities
+- Natural-language CLI execution in workspace (git, npm, shell, scripts)
+- Queue system with `/status`
+- GitHub push automation (`/push <repo> <token>`)
+- Screenshot capture from URL using ScreenshotOne API
+- Image generation from prompt using fast image API
+- Web browsing/search summaries
+- Song/video download support via `yt-dlp` and sends media back to Telegram
+- File sendback (`/sendfile`)
+- General AI coding help across major languages
 
 ## Env
 ```env
-TELEGRAM_BOT_ID=8472557033
 TELEGRAM_BOT_TOKEN=
-TELEGRAM_ADMIN_IDS=8586943787
-ADMIN_ID=8586943787
-TELEGRAM_WORKSPACE_ROOT=./telegram_workspace
+TELEGRAM_ADMIN_IDS=12345
 GEMINI_API_KEY=
 GROQ_API_KEY=
+SCREENSHOTONE_ACCESS_KEY=KN3bMn5VoWZIWw
 ```
 
 ## Run
@@ -26,15 +28,10 @@ npm install
 npm run start:telegram
 ```
 
-## Commands
-- `/shell <command>` run shell as admin
-- `/ai <prompt>` Gemini
-- `/grok <prompt>` Groq
-- `/zipls` reply to a zip and list its contents
-- `/unzip` reply to a zip and extract it
-- `/sendzip <path-in-workspace>` zip and send to chat
-
-## No-prefix behavior
-- Any normal message gets a reply.
-- For admins, messages that look like terminal/git requests are auto-converted to commands and executed.
-- For admins, messages like “write script for ...” generate a script file and send it back.
+## Natural admin prompts (no slash command needed)
+- `screenshot https://example.com`
+- `generate image neon cyberpunk city`
+- `search latest firebase auth docs`
+- `play song https://youtube.com/watch?v=...`
+- `download video https://youtube.com/watch?v=...`
+- `git status` / `npm install` / `run this command ...`
