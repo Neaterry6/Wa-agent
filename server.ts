@@ -101,7 +101,62 @@ async function startServer() {
   let botError: string | null = null;
   let botInfo: any = null;
 
-  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN");
+  const telegramApiRoot = (process.env.TELEGRAM_API_ROOT || "").trim() || undefined;
+  const bot = new Telegraf(config.botToken || "DUMMY_TOKEN", {
+    telegram: telegramApiRoot ? { apiRoot: telegramApiRoot } : undefined
+  });
+
+  const parseRetryCount = Number(process.env.TELEGRAM_LAUNCH_RETRIES || "6");
+  const launchRetryCount = Number.isFinite(parseRetryCount) ? Math.max(1, Math.floor(parseRetryCount)) : 6;
+  const parseRetryDelay = Number(process.env.TELEGRAM_LAUNCH_RETRY_DELAY_MS || "5000");
+  const launchRetryDelayMs = Number.isFinite(parseRetryDelay) ? Math.max(500, Math.floor(parseRetryDelay)) : 5000;
+
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const classifyTelegramLaunchError = (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = (err as any)?.code || "";
+    const looksLikeInvalidToken = /(?:ETELEGRAM:\s*)?(401|Unauthorized)/i.test(message);
+    const looksLikeNetworkTimeout = /ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ECONNRESET|ENOTFOUND|ECONNREFUSED/i.test(`${message} ${code}`);
+    return { message, code, looksLikeInvalidToken, looksLikeNetworkTimeout };
+  };
+
+  const launchBotWithRetry = async () => {
+    for (let attempt = 1; attempt <= launchRetryCount; attempt++) {
+      try {
+        await bot.launch();
+        botInfo = await bot.telegram.getMe();
+        botStatus = "live";
+        botError = null;
+        logger.info(`BrokenVzn Bot is live as @${botInfo.username}`);
+        console.log("BrokenVzn Bot is live as", botInfo.username);
+        return;
+      } catch (err) {
+        const details = classifyTelegramLaunchError(err);
+        const retryable = details.looksLikeNetworkTimeout && attempt < launchRetryCount;
+        botStatus = "failed";
+        botError = details.looksLikeInvalidToken
+          ? `${details.message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
+          : details.looksLikeNetworkTimeout
+            ? `${details.message} (hint: network timeout reaching Telegram API)`
+            : details.message;
+        logger.error(`Bot launch failed (attempt ${attempt}/${launchRetryCount}): ${botError}`);
+        console.error("Bot launch failed:", err);
+
+        if (details.looksLikeInvalidToken) {
+          logger.error("Verify TELEGRAM_BOT_TOKEN in your .env matches the token from @BotFather and restart the server.");
+          return;
+        }
+
+        if (!retryable) {
+          return;
+        }
+
+        const delay = launchRetryDelayMs * attempt;
+        logger.warn(`Retrying Telegram bot launch in ${delay}ms.`);
+        await wait(delay);
+      }
+    }
+  };
 
   // Bot Middlewares
   bot.use(channelCheckMiddleware);
@@ -1692,26 +1747,7 @@ ${data.description || 'No description'}`);
     botStatus = "disabled";
     logger.info("Telegram bot startup skipped (ENABLE_TELEGRAM=false).");
   } else if (config.botToken) {
-    bot.launch()
-      .then(async () => {
-        botStatus = "live";
-        botInfo = await bot.telegram.getMe();
-        logger.info(`BrokenVzn Bot is live as @${botInfo.username}`);
-        console.log("BrokenVzn Bot is live as", botInfo.username);
-      })
-      .catch(err => {
-        botStatus = "failed";
-        const message = err instanceof Error ? err.message : String(err);
-        const looksLikeInvalidToken = /(?:ETELEGRAM:\s*)?(401|Unauthorized)/i.test(message);
-        botError = looksLikeInvalidToken
-          ? `${message} (hint: TELEGRAM_BOT_TOKEN is invalid, revoked, or points to the wrong bot)`
-          : message;
-        logger.error(`Bot launch failed: ${botError}`);
-        if (looksLikeInvalidToken) {
-          logger.error("Verify TELEGRAM_BOT_TOKEN in your .env matches the token from @BotFather and restart the server.");
-        }
-        console.error("Bot launch failed:", err);
-      });
+    launchBotWithRetry();
   } else {
     botStatus = "missing_token";
     botError = "TELEGRAM_BOT_TOKEN is missing. Add it to .env and restart the server.";

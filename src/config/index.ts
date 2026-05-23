@@ -9,7 +9,11 @@ if (!botToken) {
 }
 
 const botId = process.env.TELEGRAM_BOT_ID || process.env.BOT_ID || "";
-const adminIdsRaw = process.env.TELEGRAM_ADMIN_IDS || process.env.ADMIN_IDS || "";
+const adminIdsRaw =
+  process.env.TELEGRAM_ADMIN_IDS ||
+  process.env.ADMIN_IDS ||
+  process.env.ADMIN_ID ||
+  "";
 
 export const config = {
   botToken: botToken,
