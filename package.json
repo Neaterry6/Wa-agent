@@ -9,8 +9,7 @@
     "start": "npm run build && node dist/server.mjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "start:wa": "node whatsapp-bot.js",
-    "start:wa:modular": "node whatsapp-bot.js"
+    "start:telegram": "node telegram-bot.js"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",

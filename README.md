@@ -1,33 +1,38 @@
-# BrokenVzn Agent v3.0 🦾
+# Axon Telegram Terminal Bot
 
-The ultimate, "dirty" coding and automation agent bot for Telegram. 
+Simple Telegram bot (no agent orchestration):
+- Replies to normal text from everyone (no prefix needed)
+- Blunt/rude style responses (still useful)
+- Gemini chat (`/ai` and normal text)
+- Groq chat (`/grok`)
+- Admin shell (`/shell`) for git/terminal commands
+- Zip support: upload, list, unzip, re-zip, and send back to Telegram chat
+- Can generate and send scripts from plain text requests
 
-## Features
-- **Project Scaffold Generator**: Generate entire directory structures with a single prompt.
-- **Multi-Model Routing**: Switch between Qwen Coder, Gemini Pro, and Grog (Groq Llama 3.3 70B) via `/model`.
-- **Force Join Membership**: Secure your community by requiring users to join your channel.
-- **Interactive Terminal**: Run real shell commands directly from Telegram (Admin only).
-- **GitHub Sync**: Clone, push, and manage repos from chat.
-- **Session Intelligence**: Per-user memory of current projects and settings.
+## Env
+```env
+TELEGRAM_BOT_ID=8472557033
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ADMIN_IDS=8586943787
+GEMINI_API_KEY=
+GROQ_API_KEY=
+```
 
-## Setup
-1. Fill `.env` with your API keys.
-2. Ensure you are an Admin in your force-join channel.
-3. Add `REQUIRED_CHANNEL_ID` and `ADMIN_ID` to `.env`.
-4. Run `npm start`.
+## Run
+```bash
+npm install
+npm run start:telegram
+```
 
-## Admin Dirty Commands
-- `/adminusers`: Full user registry and details.
-- `/adminstats`: System-wide statistics.
-- `/broadcast`: Send messages to all users.
-- `/terminal`: Real-time shell access.
+## Commands
+- `/shell <command>` run shell as admin
+- `/ai <prompt>` Gemini
+- `/grok <prompt>` Groq
+- `/zipls` reply to a zip and list its contents
+- `/unzip` reply to a zip and extract it
+- `/sendzip <path-in-workspace>` zip and send to chat
 
-## Dependency Notes
-- You may see this npm warning during install: `node-domexception@1.0.0 is deprecated`.
-- This warning is **non-fatal** and comes from a transitive dependency chain (`node-fetch` -> `fetch-blob` -> `node-domexception`), not from a direct dependency in this project.
-- No action is required to run the bot. The warning should disappear once upstream packages finish migrating fully to the platform-native `DOMException`.
-
-## Warning
-This bot is designed for advanced development and automation. User responsibly.
-
-Created with 💀 by BrokenVzn.
+## No-prefix behavior
+- Any normal message gets a reply.
+- For admins, messages that look like terminal/git requests are auto-converted to commands and executed.
+- For admins, messages like “write script for ...” generate a script file and send it back.
