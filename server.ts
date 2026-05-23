@@ -126,7 +126,7 @@ async function startServer() {
 
   function getState(userId: number) {
     if (!userStates.has(userId)) {
-      userStates.set(userId, { model: 'notte', mode: 'roast', cwd: telegramWorkspacesDir, isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
+      userStates.set(userId, { model: 'gemini', mode: 'roast', cwd: telegramWorkspacesDir, isTerminal: false, buttonMode: true, voiceAiMode: false, zips: {}, pendingZipEdit: false });
     }
     return userStates.get(userId)!;
   }
@@ -280,11 +280,11 @@ async function startServer() {
     return `🌲 BrokenVzn Agent — Command Tree
 
 Use / prefix for slash commands.
-You can also send plain text like: git clone <url>, unzip my.zip, or model notte.
+You can also send plain text like: git clone <url>, unzip my.zip, or model gemini.
 
 ├─ 🤖 AI Core
 │  • /help • /menu
-│  • /model <notte>
+│  • /model <gemini|groq>
 │  • /setmode <roast|helpful|coder|strict>
 │  • /transcribe (voice note → text)
 │  • /tts [voice] <text>
@@ -322,7 +322,7 @@ User: ${ctx.from?.first_name || "Broken"} | ID: ${ctx.from?.id}
 
 Core
 • /start • /help • /menu • /ping
-• /model <notte>
+• /model <gemini|groq>
 • /setmode roast|helpful|coder|strict
 
 Build + Git
@@ -496,11 +496,11 @@ If the user asks for music/video/files/zip/github/shell tasks, guide them with t
 
   bot.command("model", (ctx) => {
     const rawArg = (ctx.message.text.split(" ")[1] || "").trim().toLowerCase();
-    if (rawArg && rawArg !== "notte") return ctx.reply("Only Notte AI is enabled.");
+    if (rawArg && !["gemini", "groq"].includes(rawArg)) return ctx.reply("Usage: /model <gemini|groq>");
     const state = getState(ctx.from!.id);
-    state.model = "notte";
-    DB.updateModel(ctx.from!.id, "notte");
-    ctx.reply("✅ Active model/provider: *NOTTE AI*", { parse_mode: 'Markdown' });
+    state.model = rawArg || "gemini";
+    DB.updateModel(ctx.from!.id, state.model);
+    ctx.reply(`✅ Active model/provider: *${state.model.toUpperCase()}*`, { parse_mode: 'Markdown' });
   });
 
   bot.command("broadcast", async (ctx) => {
@@ -1350,7 +1350,7 @@ ${users.map((id) => `• ${id}`).join("\n")}` : "No whitelisted users.");
     const health = botStatus === "running" ? "running" : "failed";
     const aiStatus = await AIEngine.chat("Report current AI provider status", [], "Respond in one concise line about active provider.");
     return ctx.reply(`📊 Bot health: ${health}
-Active AI provider: Notte AI
+Active AI provider: ${AIEngine.providerName()}
 Provider check: ${aiStatus}
 Whitelisted users: ${allowedUsers.size}`);
   });
@@ -1358,16 +1358,16 @@ Whitelisted users: ${allowedUsers.size}`);
   bot.command("ask", async (ctx) => {
     const query = ctx.message.text.replace(/^\/ask(@\w+)?/i, "").trim();
     if (!query) return ctx.reply("Usage: /ask <query>");
-    await ctx.reply("🔎 Researching with Notte AI...");
-    const reply = await AIEngine.chat(query, [], "You are the main AI agent handling search and responses.", "notte");
+    await ctx.reply("🔎 Researching with Gemini/Groq...");
+    const reply = await AIEngine.chat(query, [], "You are the main AI agent handling search and responses.", "gemini");
     return sendLongTextResponse(ctx, normalizeModelReply(reply));
   });
 
   bot.command("code", async (ctx) => {
     const task = ctx.message.text.replace(/^\/code(@\w+)?/i, "").trim();
     if (!task) return ctx.reply("Usage: /code <task>");
-    await ctx.reply("💻 Coding with Notte AI...");
-    const reply = await AIEngine.chat(task, [], "You are the main AI agent handling coding tasks. Return clean code and concise explanations.", "notte");
+    await ctx.reply("💻 Coding with Gemini/Groq...");
+    const reply = await AIEngine.chat(task, [], "You are the main AI agent handling coding tasks. Return clean code and concise explanations.", "gemini");
     return sendLongTextResponse(ctx, normalizeModelReply(reply));
   });
 
