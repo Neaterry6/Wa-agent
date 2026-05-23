@@ -13,7 +13,7 @@ const db = new Database(path.join(process.cwd(), "agent.db"));
     first_name TEXT,
     github_token TEXT,
     github_repo TEXT,
-    preferred_model TEXT DEFAULT 'gemini',
+    preferred_model TEXT DEFAULT 'auto',
     is_banned INTEGER DEFAULT 0,
     joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active DATETIME DEFAULT CURRENT_TIMESTAMP

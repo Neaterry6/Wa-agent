@@ -1,9 +1,9 @@
-import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
+import axios from "axios";
 import { config } from "../config/index.ts";
 import logger from "../utils/logger.ts";
 
-type Provider = "gemini" | "groq";
+type Provider = "groq" | "external";
 
 type QueueTask<T> = {
   fn: () => Promise<T>;
@@ -19,11 +19,10 @@ export class AIEngine {
   private static readonly maxRetries = 3;
   private static lastProviderUsed: Provider | "none" = "none";
 
-  private static gemini = config.geminiKey ? new GoogleGenAI({ apiKey: config.geminiKey }) : null;
   private static groq = config.groqKey ? new Groq({ apiKey: config.groqKey }) : null;
 
   static providerName() {
-    return "Gemini + Groq";
+    return "Groq + External";
   }
 
   static queueStatus() {
@@ -35,11 +34,12 @@ export class AIEngine {
     };
   }
 
-  static async chat(prompt: string, _history: { role: string; content: string }[] = [], systemInstruction = "", model: string = "gemini") {
-    const mode = (model || "gemini").toLowerCase();
-    if (mode === "groq") return this.enqueue(() => this.runWithRetry("groq", prompt, systemInstruction));
-    if (mode === "auto") return this.enqueue(() => this.runAutoWithFallback(prompt, systemInstruction));
-    return this.enqueue(() => this.runWithRetry("gemini", prompt, systemInstruction));
+  static async chat(prompt: string, _history: { role: string; content: string }[] = [], systemInstruction = "", model: string = "auto", userId: string = "") {
+    const mode = (model || "auto").toLowerCase();
+    if (mode === "groq") return this.enqueue(() => this.runWithRetry("groq", prompt, systemInstruction, userId));
+    if (mode === "external" || mode === "toolbot" || mode === "claude") return this.enqueue(() => this.runWithRetry("external", prompt, systemInstruction, userId, mode));
+    if (mode === "auto") return this.enqueue(() => this.runAutoWithFallback(prompt, systemInstruction, userId));
+    return this.enqueue(() => this.runAutoWithFallback(prompt, systemInstruction, userId));
   }
 
   private static enqueue(fn: () => Promise<string>) {
@@ -71,12 +71,12 @@ export class AIEngine {
     }
   }
 
-  private static async runWithRetry(provider: Provider, prompt: string, systemInstruction: string) {
+  private static async runWithRetry(provider: Provider, prompt: string, systemInstruction: string, userId = "", externalMode = "external") {
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         const content = provider === "groq"
           ? await this.callGroq(prompt, systemInstruction)
-          : await this.callGemini(prompt, systemInstruction);
+          : await this.callExternal(prompt, systemInstruction, userId, externalMode);
         this.lastProviderUsed = provider;
         return content;
       } catch (error: any) {
@@ -97,14 +97,15 @@ export class AIEngine {
     throw new Error("Error: Service temporarily overloaded. Try again later.");
   }
 
-  private static async runAutoWithFallback(prompt: string, systemInstruction: string) {
+  private static async runAutoWithFallback(prompt: string, systemInstruction: string, userId = "") {
     try {
-      return await this.runWithRetry("gemini", prompt, systemInstruction);
+      if (config.externalAiUrl) return await this.callExternal(prompt, systemInstruction, userId, "external");
+      return await this.runWithRetry("groq", prompt, systemInstruction, userId);
     } catch (firstErr: any) {
       if (this.isTokenLimitError(firstErr)) {
-        logger.warn("Gemini token/context limit reached. Auto-rotating to Groq.");
+        logger.warn("Primary model token/context limit reached. Auto-rotating to Groq.");
       }
-      return await this.runWithRetry("groq", prompt, systemInstruction);
+      return await this.runWithRetry("groq", prompt, systemInstruction, userId);
     }
   }
 
@@ -129,18 +130,6 @@ export class AIEngine {
     return delay > 0 ? delay : null;
   }
 
-  private static async callGemini(prompt: string, systemInstruction: string) {
-    if (!this.gemini) throw new Error("GEMINI_API_KEY missing");
-    const response = await this.gemini.models.generateContent({
-      model: config.geminiModel,
-      config: { systemInstruction: systemInstruction || "You are the main AI agent handling search, code, and responses." },
-      contents: prompt,
-    });
-    const content = response.text;
-    if (!content) throw new Error("Gemini returned empty response");
-    return content;
-  }
-
   private static async callGroq(prompt: string, systemInstruction: string) {
     if (!this.groq) throw new Error("GROQ_API_KEY missing");
     const completion = await this.groq.chat.completions.create({
@@ -156,21 +145,48 @@ export class AIEngine {
     return content;
   }
 
+  private static async callExternal(prompt: string, systemInstruction: string, userId = "", mode = "external") {
+    const composed = systemInstruction ? `${systemInstruction}\n\nUser: ${prompt}` : prompt;
+
+    if (mode === "toolbot" && config.externalToolbotUrl) {
+      const { data } = await axios.get(config.externalToolbotUrl, { params: { prompt: composed }, timeout: 30000 });
+      const content = data?.result?.result || data?.result || data?.message;
+      if (!content) throw new Error("External toolbot returned empty response");
+      return String(content).trim();
+    }
+
+    if (mode === "claude" && config.externalClaudeUrl) {
+      const { data } = await axios.get(config.externalClaudeUrl, { params: { text: composed }, timeout: 30000 });
+      const content = data?.result?.result || data?.result || data?.message || data?.text;
+      if (!content) throw new Error("External Claude endpoint returned empty response");
+      return String(content).trim();
+    }
+
+    if (!config.externalAiUrl) throw new Error("EXTERNAL_AI_URL missing");
+    const { data } = await axios.get(config.externalAiUrl, {
+      params: { prompt: composed, uid: userId || "global", reset: "" },
+      timeout: 30000
+    });
+    const content = data?.result?.choices?.[0]?.message?.content || data?.message || data?.result?.result;
+    if (!content) throw new Error("External AI returned empty response");
+    return String(content).trim();
+  }
+
   static async generateProject(description: string) {
     const system = "You are an elite full-stack developer. Generate a complete, production-style project based on the description.";
-    return this.chat(description, [], system, "gemini");
+    return this.chat(description, [], system, "auto");
   }
 
   static async detectIntent(text: string) {
     const system = "You are an intent classifier. Respond ONLY JSON with intent.";
     try {
-      return JSON.parse(await this.chat(text, [], system, "gemini"));
+      return JSON.parse(await this.chat(text, [], system, "auto"));
     } catch {
       return { intent: "CHAT", query: text };
     }
   }
 
   static async analyzeImage(_base64Data: string, _mimeType: string, prompt = "Analyze this image in detail.") {
-    return this.chat(prompt, [], "You are a vision assistant without direct pixels. Ask for image details when needed.", "gemini");
+    return this.chat(prompt, [], "You are a vision assistant without direct pixels. Ask for image details when needed.", "auto");
   }
 }
