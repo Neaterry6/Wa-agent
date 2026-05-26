@@ -46,6 +46,10 @@ function aiSystemPrompt() {
   return 'You are Axon. You can code in all major languages (js/ts/python/go/rust/java/c/c++/php/ruby/swift/kotlin). Keep replies useful and direct.';
 }
 
+function shouldRunNaturalShell(text) {
+  return /(\bgit\b|\bshell\b|\bterminal\b|\bnpm\b|\bnode\b|\bpnpm\b|\byarn\b|\bbun\b|\bpython\b|\bpip\b|\bdocker\b|\bzip\b|\bunzip\b|\bclone\b|\bpush\b|\bdeploy\b|\bbuild\b|\brun\b|\bexecute\b|\bcommand\b)/i.test(text);
+}
+
 async function askGemini(prompt) {
   if (!gemini) throw new Error('Gemini is not configured.');
   lastEndpoint = 'gemini';
@@ -58,6 +62,20 @@ async function askGroq(prompt) {
   lastEndpoint = 'groq';
   const completion = await groq.chat.completions.create({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: aiSystemPrompt() }, { role: 'user', content: prompt }], temperature: 0.2 });
   return completion.choices?.[0]?.message?.content || 'No response.';
+}
+
+async function planShellCommand(text) {
+  const plannerPrompt = [
+    'Convert the request to ONE executable bash command (or chained command with &&).',
+    'Rules:',
+    '- Output command only. No markdown. No explanation.',
+    '- Prefer safe repo-local commands in the current workspace.',
+    '- If task mentions pushing code/zip to GitHub, include required git steps and use provided URL/token if present.',
+    `Request: ${text}`
+  ].join('\n');
+
+  const answer = gemini ? await askGemini(plannerPrompt) : await askGroq(plannerPrompt);
+  return answer.replace(/```[a-z]*|```/gi, '').trim();
 }
 
 async function runShell(command) {
@@ -145,7 +163,13 @@ bot.on('text', async (ctx) => {
     if (/^search\s+/i.test(text)) return enqueueTask(ctx, 'web-search', async () => webSearch(ctx, text.replace(/^search\s+/i, '').trim()));
     if (/^(play song|download song)\s+/i.test(text)) return enqueueTask(ctx, 'download-audio', async () => downloadMedia(ctx, text.replace(/^(play song|download song)\s+/i, '').trim(), 'audio'));
     if (/^(download video|send video)\s+/i.test(text)) return enqueueTask(ctx, 'download-video', async () => downloadMedia(ctx, text.replace(/^(download video|send video)\s+/i, '').trim(), 'video'));
-    if (/\bgit\b|\bshell\b|\bterminal\b|\bnpm\b|\bnode\b/i.test(text)) return enqueueTask(ctx, 'nl-cli', async () => { const cmd = (await askGemini(`Return shell command only for: ${text}`)).replace(/```[a-z]*|```/gi, '').trim(); const out = await runShell(cmd); await ctx.reply(trimMessage(`Executed:\n${cmd}`)); await ctx.reply(trimMessage(out || 'Done.')); });
+    if (shouldRunNaturalShell(text)) return enqueueTask(ctx, 'nl-cli', async () => {
+      await ctx.reply('🧠 Planning terminal command from your request...');
+      const cmd = await planShellCommand(text);
+      await ctx.reply(trimMessage(`▶️ Running command:\n${cmd}`));
+      const out = await runShell(cmd);
+      await ctx.reply(trimMessage(out || 'Done.'));
+    });
   }
 
   try { const answer = await askGemini(`${text}\n\nIf relevant, mention you can handle coding in many languages, web search, screenshot, media downloads, and git/shell execution.`); await ctx.reply(trimMessage(answer)); }
